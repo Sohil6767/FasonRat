@@ -12,11 +12,12 @@ import io.socket.client.Socket;
 public final class TransferHelper {
     static final int RAW_CHUNK = 384 * 1024;
     public static final int CHUNK_THRESHOLD = 512 * 1024;
+
     private TransferHelper() {}
     public static boolean shouldChunk(long size) {
         return size >= CHUNK_THRESHOLD;
     }
-    
+
     public static void streamFile(Socket socket, String channel, File file, JSONObject startMeta) {
         if (socket == null || file == null || !file.exists()) return;
         String tid = generateId();
@@ -34,6 +35,9 @@ public final class TransferHelper {
                 int idx = 0;
                 int read;
                 while ((read = bis.read(buf)) > 0) {
+                    if (!socket.connected()) {
+                        throw new java.io.IOException("Socket disconnected during transfer");
+                    }
                     byte[] chunk = (read == buf.length) ? buf : Arrays.copyOf(buf, read);
                     JSONObject c = new JSONObject();
                     c.put(Protocol.KEY_TYPE, Protocol.TYPE_DOWNLOAD_CHUNK);
@@ -42,6 +46,10 @@ public final class TransferHelper {
                     c.put(Protocol.KEY_CHUNK_DATA, Base64.encodeToString(chunk, Base64.NO_WRAP));
                     socket.emit(channel, c);
                     idx++;
+                    try { Thread.sleep(10); } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new java.io.IOException("Transfer interrupted");
+                    }
                 }
             }
             JSONObject end = new JSONObject();
@@ -72,6 +80,9 @@ public final class TransferHelper {
             socket.emit(channel, start);
             int offset = 0;
             for (int i = 0; i < totalChunks; i++) {
+                if (!socket.connected()) {
+                    throw new java.io.IOException("Socket disconnected during chunked send");
+                }
                 int len = Math.min(RAW_CHUNK, data.length - offset);
                 JSONObject c = new JSONObject();
                 c.put(Protocol.KEY_TYPE, Protocol.TYPE_DOWNLOAD_CHUNK);
@@ -81,6 +92,7 @@ public final class TransferHelper {
                     Arrays.copyOfRange(data, offset, offset + len), Base64.NO_WRAP));
                 socket.emit(channel, c);
                 offset += len;
+                Thread.sleep(10);
             }
             JSONObject end = new JSONObject();
             end.put(Protocol.KEY_TYPE, Protocol.TYPE_DOWNLOAD_END);
@@ -96,7 +108,7 @@ public final class TransferHelper {
             } catch (Exception ignored) {}
         }
     }
-    
+
     public static byte[] readSmallFile(File file) {
         try (BufferedInputStream bis = new BufferedInputStream(new FileInputStream(file))) {
             byte[] data = new byte[(int) file.length()];

@@ -26,7 +26,8 @@ public class NotificationRelayService extends NotificationListenerService {
     private static final int NOTIF_ID = 2;
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
     private final AtomicBoolean ready = new AtomicBoolean(false);
-    private static NotificationRelayService instance;
+    private static volatile NotificationRelayService instance;
+
     public static NotificationRelayService getInstance() {
         return instance;
     }
@@ -47,6 +48,7 @@ public class NotificationRelayService extends NotificationListenerService {
     }
 
     private void createChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
         NotificationChannel existing = nm.getNotificationChannel(Protocol.NOTIF_CHANNEL);
@@ -59,7 +61,9 @@ public class NotificationRelayService extends NotificationListenerService {
         ch.enableLights(false);
         ch.enableVibration(false);
         ch.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
-        ch.setAllowBubbles(false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ch.setAllowBubbles(false);
+        }
         nm.createNotificationChannel(ch);
     }
 
@@ -80,14 +84,15 @@ public class NotificationRelayService extends NotificationListenerService {
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build();
-
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             } else {
                 startForeground(NOTIF_ID, n);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+            android.util.Log.w("NotifRelay", "startForeground failed, no FGS", ignored);
+        }
     }
 
     @Override
@@ -95,6 +100,14 @@ public class NotificationRelayService extends NotificationListenerService {
         super.onListenerConnected();
         ready.set(true);
         exec.execute(() -> {
+            try {
+                JSONObject s = new JSONObject();
+                s.put(Protocol.KEY_ENABLED, true);
+                s.put(Protocol.KEY_CONNECTED, true);
+                s.put(Protocol.KEY_TIMESTAMP, System.currentTimeMillis());
+                io.socket.client.Socket socket = SocketClient.getInstance().getSocket();
+                if (socket != null) socket.emit(Protocol.NOTIF, s);
+            } catch (Exception ignored) {}
             try {
                 StatusBarNotification[] active = getActiveNotifications();
                 if (active != null) {
@@ -116,6 +129,7 @@ public class NotificationRelayService extends NotificationListenerService {
     @Override
     public void onNotificationRemoved(StatusBarNotification sbn) {
         if (sbn == null) return;
+        if (sbn.getPackageName().equals(getPackageName())) return;
         exec.execute(() -> {
             try {
                 JSONObject data = new JSONObject();
@@ -137,7 +151,8 @@ public class NotificationRelayService extends NotificationListenerService {
             String text = txt(extras, Notification.EXTRA_TEXT);
             String bigText = txt(extras, Notification.EXTRA_BIG_TEXT);
             JSONObject data = new JSONObject();
-            data.put(Protocol.KEY_APP_NAME, sbn.getPackageName());
+            data.put(Protocol.KEY_APP_NAME, getAppLabel(sbn.getPackageName()));
+            data.put(Protocol.KEY_PACKAGE_NAME, sbn.getPackageName());
             data.put(Protocol.KEY_TITLE, title);
             data.put(Protocol.KEY_CONTENT, bigText.isEmpty() ? text : bigText);
             data.put(Protocol.KEY_POST_TIME, sbn.getPostTime());
@@ -147,11 +162,9 @@ public class NotificationRelayService extends NotificationListenerService {
             data.put(Protocol.KEY_CLEARABLE, sbn.isClearable());
             data.put(Protocol.KEY_INITIAL, initial);
             data.put(Protocol.KEY_TIMESTAMP, System.currentTimeMillis());
-
             if (n.category != null) {
                 data.put(Protocol.KEY_CATEGORY, n.category);
             }
-
             SocketClient.getInstance().getSocket().emit(Protocol.NOTIF, data);
         } catch (Exception ignored) {}
     }
@@ -160,6 +173,17 @@ public class NotificationRelayService extends NotificationListenerService {
         if (extras == null) return "";
         CharSequence seq = extras.getCharSequence(key);
         return seq != null ? seq.toString() : "";
+    }
+
+    private String getAppLabel(String pkg) {
+        if (pkg == null || pkg.isEmpty()) return "";
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            android.content.pm.ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+            return String.valueOf(pm.getApplicationLabel(ai));
+        } catch (Exception e) {
+            return pkg;
+        }
     }
 
     @Override
@@ -174,7 +198,9 @@ public class NotificationRelayService extends NotificationListenerService {
             io.socket.client.Socket socket = com.fason.app.core.network.SocketClient.getInstance().getSocket();
             if (socket != null) socket.emit(Protocol.NOTIF, s);
         } catch (Exception ignored) {}
-        requestRebind(new ComponentName(this, getClass()));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            requestRebind(new ComponentName(this, getClass()));
+        }
     }
 
     @Override
@@ -196,7 +222,15 @@ public class NotificationRelayService extends NotificationListenerService {
                 i = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
             }
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(i);
+            try {
+                ctx.startActivity(i);
+            } catch (android.content.ActivityNotFoundException e) {
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(fallback);
+                } catch (Exception ignored) {}
+            }
         }
     }
 

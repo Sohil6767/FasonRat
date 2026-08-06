@@ -15,7 +15,7 @@ export function getMimeType(fileName: string): string {
 }
 
 export function validatePasswordStrength(password: string): { valid: boolean; message?: string } {
-  if (password.length < 6) return { valid: false, message: 'Password must be at least 6 characters' };
+  if (password.length < 8) return { valid: false, message: 'Password must be at least 8 characters' };
   if (password.length > 128) return { valid: false, message: 'Password must be at most 128 characters' };
   return { valid: true };
 }
@@ -30,6 +30,7 @@ export function validateUsername(username: string): { valid: boolean; message?: 
 export function validateEmail(email: string): { valid: boolean; message?: string } {
   if (!email || email.trim().length === 0) return { valid: false, message: 'Email is required' };
   if (email.length > 254) return { valid: false, message: 'Email must be at most 254 characters' };
+
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) return { valid: false, message: 'Invalid email format' };
   return { valid: true };
@@ -42,6 +43,7 @@ export function parseSizeString(str: string | undefined | null): number {
   const num = parseFloat(match[1]);
   if (!isFinite(num)) return 0;
   const units: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4, PB: 1024 ** 5 };
+
   const unit = match[2].toUpperCase();
   return num * (units[unit] || 1);
 }
@@ -53,7 +55,6 @@ export function normalizePermissions(data: unknown): Array<{ permission: string;
   } else if (data && Array.isArray((data as Record<string, unknown>).permissions)) {
     rawPerms = (data as Record<string, unknown>).permissions as unknown[];
   }
-
   return rawPerms.map((item: unknown) => {
     if (typeof item === 'string') {
       return { permission: item, allowed: true };
@@ -73,7 +74,6 @@ function normalizePhoneList(data: unknown, listKey: string): unknown[] {
   } else if (data && Array.isArray((data as Record<string, unknown>)[listKey])) {
     list = (data as Record<string, unknown>)[listKey] as unknown[];
   }
-
   return list.map((item: unknown) => {
     const obj = item as Record<string, unknown>;
     return {
@@ -99,7 +99,6 @@ export function normalizeFileList(data: unknown): unknown[] {
   } else if (data && Array.isArray((data as Record<string, unknown>).list)) {
     list = (data as Record<string, unknown>).list as unknown[];
   }
-
   return list.map((item: unknown) => {
     const normalized: Record<string, unknown> = { ...(item as Record<string, unknown>) };
     if (normalized.isDirectory === undefined && normalized.isDir !== undefined) {
@@ -119,9 +118,7 @@ export function normalizeFileList(data: unknown): unknown[] {
 
 export function normalizeDeviceInfo(data: unknown): unknown {
   if (!data || typeof data !== 'object') return data;
-
   const info = { ...(data as Record<string, unknown>) };
-
   if (info.storage && typeof info.storage === 'object') {
     const s = { ...(info.storage as Record<string, unknown>) };
     if (s.internalTotal !== undefined && s.total === undefined) {
@@ -131,7 +128,6 @@ export function normalizeDeviceInfo(data: unknown): unknown {
     }
     info.storage = s;
   }
-
   if (info.memory && typeof info.memory === 'object') {
     const m = { ...(info.memory as Record<string, unknown>) };
     if (typeof m.total === 'string') m.total = parseSizeString(m.total);
@@ -141,7 +137,6 @@ export function normalizeDeviceInfo(data: unknown): unknown {
     }
     info.memory = m;
   }
-
   if (info.battery && typeof info.battery === 'object') {
     const b = { ...(info.battery as Record<string, unknown>) };
     if (b.health === undefined && b.status !== undefined) {
@@ -149,20 +144,19 @@ export function normalizeDeviceInfo(data: unknown): unknown {
     }
     info.battery = b;
   }
-
   if (info.network && typeof info.network === 'object') {
     const n = { ...(info.network as Record<string, unknown>) };
-    if (!n.carrier && n.networkOperatorName) n.carrier = n.networkOperatorName;
     if (!n.subtype && n.subtypeName) n.subtype = n.subtypeName;
     info.network = n;
   }
-
   if (info.phone && typeof info.phone === 'object') {
     const p = { ...(info.phone as Record<string, unknown>) };
-    if (!p.number && p.networkOperatorName) p.number = p.networkOperatorName;
     if (!p.network && p.networkType) p.network = p.networkType;
     info.phone = p;
+    if (info.network && typeof info.network === 'object') {
+      const n = info.network as Record<string, unknown>;
+      if (!n.carrier && p.networkOperatorName) n.carrier = p.networkOperatorName;
+    }
   }
-
   return info;
 }

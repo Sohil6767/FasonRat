@@ -93,7 +93,6 @@ button, a, [role="button"] {
   touch-action: manipulation;
 }
 
-/* Thin scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -109,7 +108,6 @@ button, a, [role="button"] {
   background: rgba(128, 128, 128, 0.7);
 }
 
-/* Footer Credit */
 .footer-credit {
   font-size: 0.7rem;
   font-weight: 300;
@@ -140,7 +138,6 @@ button, a, [role="button"] {
   50% { background-position: 100% 50%; }
 }
 
-/* Hide scrollbar for horizontal tab bars */
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -149,7 +146,6 @@ button, a, [role="button"] {
   display: none;
 }
 
-/* Global Card shadow override — removes default shadow from shadcn Card */
 .card {
   box-shadow: none !important;
 }

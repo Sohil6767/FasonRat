@@ -19,6 +19,7 @@ interface AuthState {
 }
 
 const VALID_ROLES: UserRole[] = ['admin', 'user'];
+
 function isValidPermission(p: string): p is Permission {
   return ALL_PERMISSIONS.includes(p as Permission);
 }
@@ -45,7 +46,7 @@ function safeParseUser(): AuthUser | null {
     } else {
       parsed.permissions = parsed.permissions.filter(isValidPermission);
     }
-    if (typeof parsed.id !== 'number' || !parsed.email) {
+    if (typeof parsed.id !== 'string' || !parsed.email) {
       localStorage.removeItem('auth-user');
       return null;
     }
@@ -101,7 +102,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    try { await authApi.logout(); } catch { /* ignore */ }
+    try { await authApi.logout(); } catch {}
     disconnectAdminSocket();
     localStorage.removeItem('auth-user');
     localStorage.removeItem('auth-token');
@@ -109,6 +110,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   checkAuth: async () => {
+    set({ isChecking: true });
     try {
       const res = await authApi.me();
       if (res.data.success) {

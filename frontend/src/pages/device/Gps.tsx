@@ -12,17 +12,29 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { MapPin, Play, Square, ExternalLink, Navigation, ChevronLeft, ChevronRight, AlertCircle, X } from 'lucide-react';
 import { clientsApi } from '@/services/api';
-import { MapContainer, TileLayer, Marker, Popup, Circle, Polyline } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
 const defaultIcon = L.icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
   iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41],
 });
 L.Marker.prototype.options.icon = defaultIcon;
+
+function MapRecenter({ lat, lng, follow }: { lat: number; lng: number; follow: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    if (follow) map.setView([lat, lng], 16, { animate: true });
+  }, [lat, lng, map, follow]);
+  return null;
+}
 
 function formatTime(time: string | number | undefined): string {
   if (!time) return '-';
@@ -39,7 +51,17 @@ export default function GpsPage() {
   const [customInterval, setCustomInterval] = useState('30');
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [follow, setFollow] = useState(true);
   const mapRef = useRef<L.Map | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
 
   const { data: rawData, loading, error, refresh, sendCommand, commandStatus, clearData } = useDeviceData<{
     locations: GpsLocation[];
@@ -157,9 +179,10 @@ export default function GpsPage() {
                   center={[latest.latitude, latest.longitude]}
                   zoom={16}
                   style={{ height: '100%', width: '100%' }}
-                  ref={(m) => { if (m) mapRef.current = m; }}
+                  ref={(m) => { mapRef.current = m; }}
                 >
                   <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; OpenStreetMap' />
+                  <MapRecenter lat={latest.latitude} lng={latest.longitude} follow={follow} />
                   {latest.accuracy && (
                     <Circle center={[latest.latitude, latest.longitude]} radius={latest.accuracy} pathOptions={{ color: 'blue', fillOpacity: 0.1 }} />
                   )}
@@ -177,6 +200,19 @@ export default function GpsPage() {
                     <Polyline positions={historyPath} pathOptions={{ color: 'red', weight: 2, opacity: 0.6 }} />
                   )}
                 </MapContainer>
+              </div>
+              <div className="px-3 py-2 border-t flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {follow ? 'Following latest fix' : 'Free pan. Auto-follow off.'}
+                </span>
+                <Button
+                  variant={follow ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setFollow(f => !f)}
+                >
+                  {follow ? 'Following' : 'Follow'}
+                </Button>
               </div>
             </Card>
           )}

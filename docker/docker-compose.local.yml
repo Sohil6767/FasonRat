@@ -1,6 +1,3 @@
-# Local build — build from source (no Docker Hub)
-# Usage: docker compose -f docker/docker-compose.local.yml up --build
-
 services:
   fasonrat:
     build:
@@ -14,6 +11,7 @@ services:
       - fasonrat-data:/app/backend/data
     environment:
       - NODE_ENV=production
+      - FASON_TRUST_PROXY=1
     env_file:
       - path: ../.env
         required: false

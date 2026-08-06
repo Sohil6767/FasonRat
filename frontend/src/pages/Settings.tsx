@@ -6,16 +6,25 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Save, AlertCircle, CheckCircle, User, Lock, ShieldCheck, Shield, KeyRound, RefreshCw, Eye, EyeOff, Monitor, Trash2 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Save, AlertCircle, CheckCircle, User, Lock, ShieldCheck, Shield, KeyRound, RefreshCw, Eye, EyeOff, Monitor, Trash2, Copy, AlertTriangle, Wrench } from 'lucide-react';
+import { copyToClipboard } from '@/lib/utils';
 
-function generateRandomSecret(len = 32): string {
-  const bytes = new Uint8Array(len / 2);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+interface SessionInfo {
+  id: string;
+  userId: string;
+  username: string;
+  ip: string;
+  userAgent: string | null;
+  createdAt: string;
+  expiresAt: string;
+  isCurrent: boolean;
 }
 
 export default function SettingsPage() {
   const { user, checkAuth, hasPermission } = useAuthStore();
+  const canViewSettings = hasPermission('settings:view');
+  const canEditSettings = hasPermission('settings:edit');
 
   const [profileUsername, setProfileUsername] = useState(user?.username || '');
   const [profileEmail, setProfileEmail] = useState(user?.email || '');
@@ -30,30 +39,28 @@ export default function SettingsPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
 
-  const [deviceSecretEnabled, setDeviceSecretEnabled] = useState<boolean | null>(null);
-  const [currentSecret, setCurrentSecret] = useState('');
+  const [deviceSecret, setDeviceSecret] = useState<string | null>(null);
   const [secretInput, setSecretInput] = useState('');
   const [secretVisible, setSecretVisible] = useState(false);
+  const [secretRegenerating, setSecretRegenerating] = useState(false);
   const [secretSaving, setSecretSaving] = useState(false);
   const [secretError, setSecretError] = useState<string | null>(null);
   const [secretSuccess, setSecretSuccess] = useState<string | null>(null);
+  const [secretCopied, setSecretCopied] = useState(false);
+  const [regenDialogOpen, setRegenDialogOpen] = useState(false);
   const secretTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const canEditSettings = hasPermission('settings:edit');
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  interface SessionInfo {
-    id: number;
-    userId: number;
-    username: string;
-    ip: string;
-    createdAt: string;
-    expiresAt: string;
-    tokenPreview: string;
-    isCurrent: boolean;
-  }
+  const [showServerUrl, setShowServerUrl] = useState(true);
+  const [builderSettingsLoading, setBuilderSettingsLoading] = useState(false);
+  const [builderSettingsError, setBuilderSettingsError] = useState<string | null>(null);
+
+  const secretDirty = secretInput !== (deviceSecret || '') && secretInput.trim().length > 0;
+
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
-  const [revokingId, setRevokingId] = useState<number | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const profileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const passwordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,81 +70,115 @@ export default function SettingsPage() {
       if (profileTimerRef.current) clearTimeout(profileTimerRef.current);
       if (passwordTimerRef.current) clearTimeout(passwordTimerRef.current);
       if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
-    if (!hasPermission('settings:view')) return;
-    configApi.get()
+
+    configApi.getDeviceSecret()
       .then((res) => {
         if (res.data.success) {
-          const sec = res.data.data?.security;
-          setDeviceSecretEnabled(!!sec?.deviceSecretEnabled);
-          const value = typeof sec?.deviceSecret === 'string' ? sec.deviceSecret : '';
-          setCurrentSecret(value);
-          setSecretInput(value);
+          const s = res.data.data?.deviceSecret || null;
+          setDeviceSecret(s);
+          setSecretInput(s || '');
         }
       })
       .catch(() => {  });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  const handleSecretSave = async () => {
+    if (!canViewSettings) return;
+    configApi.get()
+      .then((res) => {
+        if (res.data.success) {
+          setShowServerUrl(res.data.data?.build?.showServerUrl !== false);
+        }
+      })
+      .catch(() => {  });
+  }, [canViewSettings]);
+
+  const handleToggleShowServerUrl = async (value: boolean) => {
+    setShowServerUrl(value);
+    setBuilderSettingsLoading(true);
+    setBuilderSettingsError(null);
+    try {
+      await configApi.set('build.showServerUrl', String(value));
+    } catch (err: any) {
+      setShowServerUrl(!value);
+
+      setBuilderSettingsError(err?.response?.data?.error || 'Failed to update setting');
+    }
+    setBuilderSettingsLoading(false);
+  };
+
+  const handleCopySecret = async () => {
+    const val = secretInput || deviceSecret;
+    if (!val) return;
+    const ok = await copyToClipboard(val);
+    if (ok) {
+      setSecretCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setSecretCopied(false), 2000);
+    } else {
+      setSecretError('Copy failed. Select and copy manually.');
+      if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
+      secretTimerRef.current = setTimeout(() => setSecretError(null), 4000);
+    }
+  };
+
+  const handleSaveDeviceSecret = async () => {
+    const value = secretInput.trim();
+    if (!value) {
+      setSecretError('Secret cannot be empty');
+      return;
+    }
+    if (value.length < 8) {
+      setSecretError('Secret must be at least 8 characters');
+      return;
+    }
+    if (/[\r\n=]/.test(value)) {
+      setSecretError('Secret must not contain newlines or "=" characters');
+      return;
+    }
     setSecretSaving(true);
     setSecretError(null);
     setSecretSuccess(null);
     try {
-      const value = secretInput.trim();
-      if (value.length > 0 && value.length < 8) {
-        setSecretError('Secret must be at least 8 characters');
-        setSecretSaving(false);
-        return;
-      }
       const res = await configApi.setDeviceSecret(value);
       if (res.data.success) {
-        setDeviceSecretEnabled(!!res.data.enabled);
-
-        const savedValue = typeof res.data.value === 'string' ? res.data.value : value;
-        setCurrentSecret(savedValue);
-        setSecretInput(savedValue);
-        setSecretSuccess(value ? 'Device authentication enabled. Rebuild the APK to embed the new secret.' : 'Device authentication disabled. Rebuild the APK to remove the secret.');
+        setDeviceSecret(res.data.data.deviceSecret);
+        setSecretInput(res.data.data.deviceSecret);
+        setSecretSuccess('Secret saved. Rebuild your APK to embed the new value.');
         if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
         secretTimerRef.current = setTimeout(() => setSecretSuccess(null), 6000);
       } else {
-        setSecretError(res.data.error || 'Failed to update device secret');
+        setSecretError(res.data.error || 'Failed to save secret');
       }
     } catch (err: any) {
-      setSecretError(err?.response?.data?.error || 'Failed to update device secret');
+      setSecretError(err?.response?.data?.error || 'Failed to save secret');
     }
     setSecretSaving(false);
   };
 
-  const handleSecretDisable = async () => {
-    setSecretSaving(true);
+  const handleRegenerateDeviceSecret = async () => {
+    setRegenDialogOpen(false);
+    setSecretRegenerating(true);
     setSecretError(null);
     setSecretSuccess(null);
     try {
-      const res = await configApi.setDeviceSecret('');
+      const res = await configApi.regenerateDeviceSecret();
       if (res.data.success) {
-        setDeviceSecretEnabled(false);
-        setCurrentSecret('');
-        setSecretInput('');
-        setSecretSuccess('Device authentication disabled. Rebuild the APK to remove the secret.');
+        setDeviceSecret(res.data.data.deviceSecret);
+        setSecretInput(res.data.data.deviceSecret);
+        setSecretSuccess('Secret rotated. Rebuild your APK to use the new one.');
         if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
         secretTimerRef.current = setTimeout(() => setSecretSuccess(null), 6000);
       } else {
-        setSecretError(res.data.error || 'Failed to disable device secret');
+        setSecretError(res.data.error || 'Failed to regenerate secret');
       }
     } catch (err: any) {
-      setSecretError(err?.response?.data?.error || 'Failed to disable device secret');
+      setSecretError(err?.response?.data?.error || 'Failed to regenerate secret');
     }
-    setSecretSaving(false);
-  };
-
-  const handleGenerateRandom = () => {
-    setSecretInput(generateRandomSecret(32));
-    setSecretError(null);
-    setSecretSuccess(null);
+    setSecretRegenerating(false);
   };
 
   const fetchSessions = async () => {
@@ -156,7 +197,7 @@ export default function SettingsPage() {
     setSessionsLoading(false);
   };
 
-  const handleRevokeSession = async (id: number) => {
+  const handleRevokeSession = async (id: string) => {
     setRevokingId(id);
     try {
       const res = await authApi.revokeSession(id);
@@ -190,7 +231,10 @@ export default function SettingsPage() {
       const updates: { username?: string; email?: string } = {};
       if (profileUsername !== user?.username) updates.username = profileUsername;
       if (profileEmail !== user?.email) updates.email = profileEmail;
-      if (Object.keys(updates).length > 0) {
+      if (Object.keys(updates).length === 0) {
+
+        setProfileError('No changes to save');
+      } else {
         const res = await authApi.updateProfile(updates);
         if (res.data.success) {
           await checkAuth();
@@ -212,8 +256,8 @@ export default function SettingsPage() {
       setPasswordError('Passwords do not match');
       return;
     }
-    if (newPassword.length < 6) {
-      setPasswordError('Password must be at least 6 characters');
+    if (newPassword.length < 8) {
+      setPasswordError('Password must be at least 8 characters');
       return;
     }
     setPasswordSaving(true);
@@ -350,131 +394,199 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {hasPermission('settings:view') && (
-        <Card className="shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <KeyRound className="h-5 w-5" /> Device Authentication
-            </CardTitle>
-            <CardDescription>
-              Require a shared secret for new device connections. Disabled by default.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {}
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">Status:</span>
-              {deviceSecretEnabled === null ? (
-                <Badge variant="secondary">Unknown</Badge>
-              ) : deviceSecretEnabled ? (
-                <Badge className="gap-1 bg-success/15 text-success border-success/30 hover:bg-success/15">
-                  <ShieldCheck className="h-3 w-3" /> Enabled
-                </Badge>
-              ) : (
-                <Badge variant="secondary" className="gap-1">
-                  <Shield className="h-3 w-3" /> Disabled
-                </Badge>
-              )}
+      {}
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <KeyRound className="h-5 w-5" /> Device Authentication
+          </CardTitle>
+          <CardDescription>
+            Your personal secret for device connections. Embedded in every APK you build.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Status:</span>
+            {deviceSecret ? (
+              <Badge className="gap-1 bg-success/15 text-success border-success/30 hover:bg-success/15">
+                <ShieldCheck className="h-3 w-3" /> Active
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="gap-1">
+                <Shield className="h-3 w-3" /> Not generated
+              </Badge>
+            )}
+          </div>
+
+          {secretError && (
+            <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" /> {secretError}
             </div>
+          )}
+          {secretSuccess && (
+            <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-success text-sm flex items-start gap-2">
+              <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" /> <span>{secretSuccess}</span>
+            </div>
+          )}
 
-            {}
-            {deviceSecretEnabled && (
-              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-sm flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-medium">Already-registered devices will keep working until they reconnect.</p>
-                  <p className="mt-1 opacity-90">Any device that reconnects (or any newly built APK) must present this secret. Rebuild the APK after changing the secret so it carries the new value.</p>
-                </div>
-              </div>
-            )}
+          <div className="space-y-2">
+            <Label htmlFor="device-secret">Secret</Label>
+            <div className="flex gap-2">
+              <Input
+                id="device-secret"
+                readOnly={false}
+                type={secretVisible ? 'text' : 'password'}
+                value={secretInput}
+                placeholder={deviceSecret ? '' : 'Type a secret or click Generate'}
+                onChange={(e) => { setSecretInput(e.target.value); setSecretError(null); setSecretSuccess(null); }}
+                className="font-mono text-sm"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setSecretVisible(!secretVisible)}
+                disabled={secretRegenerating || secretSaving || !secretInput}
+                title={secretVisible ? 'Hide secret' : 'Show secret'}
+                aria-label={secretVisible ? 'Hide secret' : 'Show secret'}
+                className="shrink-0"
+              >
+                {secretVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={handleCopySecret}
+                disabled={secretRegenerating || secretSaving || !secretInput}
+                title={secretCopied ? 'Copied!' : 'Copy to clipboard'}
+                aria-label="Copy to clipboard"
+                className="shrink-0"
+              >
+                {secretCopied ? <CheckCircle className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {deviceSecret
+                ? 'Edit the field and Save, or click Regenerate for a random one. Min 8 chars.'
+                : 'Type a secret (min 8 chars) and Save, or click Generate for a random one.'}
+            </p>
+          </div>
 
-            {secretError && (
-              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" /> {secretError}
-              </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={handleSaveDeviceSecret}
+              disabled={secretSaving || secretRegenerating || !secretDirty}
+              className="gap-2"
+            >
+              {secretSaving ? <><RefreshCw className="h-4 w-4 animate-spin" /> Saving…</> : <><Save className="h-4 w-4" /> Save Secret</>}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRegenDialogOpen(true)}
+              disabled={secretRegenerating || secretSaving}
+              className="gap-2"
+            >
+              {secretRegenerating ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {deviceSecret ? 'Regenerate' : 'Generate'}
+            </Button>
+            {secretDirty && (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => { setSecretInput(deviceSecret || ''); setSecretError(null); setSecretSuccess(null); }}
+                disabled={secretSaving || secretRegenerating}
+                className="gap-2"
+              >
+                Reset
+              </Button>
             )}
-            {secretSuccess && (
-              <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-success text-sm flex items-start gap-2">
-                <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" /> <span>{secretSuccess}</span>
-              </div>
-            )}
+          </div>
+        </CardContent>
+      </Card>
 
-            {canEditSettings && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="device-secret">Secret</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="device-secret"
-                      type={secretVisible ? 'text' : 'password'}
-                      placeholder="Type or click Generate"
-                      value={secretInput}
-                      onChange={(e) => { setSecretInput(e.target.value); setSecretError(null); setSecretSuccess(null); }}
-                      className="font-mono text-sm"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      onClick={() => setSecretVisible(!secretVisible)}
-                      disabled={secretSaving}
-                      title={secretVisible ? 'Hide secret' : 'Show secret'}
-                      aria-label={secretVisible ? 'Hide secret' : 'Show secret'}
-                      className="shrink-0"
-                    >
-                      {secretVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleGenerateRandom}
-                      disabled={secretSaving}
-                      title="Generate a random 32-char hex secret"
-                      className="gap-2 shrink-0"
-                    >
-                      <RefreshCw className="h-4 w-4" /> Generate
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {currentSecret
-                      ? 'Current secret is hidden. Click the eye to reveal it, or Generate to rotate.'
-                      : 'Min 8 chars. Saved value is hidden — click the eye to reveal.'}
-                  </p>
-                </div>
+      <Dialog open={regenDialogOpen} onOpenChange={setRegenDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              {deviceSecret ? 'Regenerate Device Secret?' : 'Generate Device Secret?'}
+            </DialogTitle>
+            <DialogDescription>
+              {deviceSecret
+                ? 'Replaces current secret. Existing APKs stop working and must be rebuilt.'
+                : 'A new random secret will be created and embedded into APKs you build. Devices already connected will keep working until they reconnect.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRegenDialogOpen(false)}
+              disabled={secretRegenerating}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleRegenerateDeviceSecret}
+              disabled={secretRegenerating}
+              className="gap-2"
+            >
+              {secretRegenerating ? (
+                <><RefreshCw className="h-4 w-4 animate-spin" /> Regenerating…</>
+              ) : (
+                <><RefreshCw className="h-4 w-4" /> {deviceSecret ? 'Regenerate' : 'Generate'}</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    onClick={handleSecretSave}
-                    disabled={secretSaving || !secretInput.trim()}
-                    className="gap-2"
-                  >
-                    {secretSaving ? 'Saving...' : (
-                      deviceSecretEnabled
-                        ? <><Save className="h-4 w-4" /> Update Secret</>
-                        : <><ShieldCheck className="h-4 w-4" /> Enable</>
-                    )}
-                  </Button>
-                  {deviceSecretEnabled && (
-                    <Button
-                      onClick={handleSecretDisable}
-                      variant="destructive"
-                      disabled={secretSaving}
-                      className="gap-2"
-                    >
-                      <Shield className="h-4 w-4" /> Disable
-                    </Button>
-                  )}
-                </div>
-              </>
-            )}
-
-            {!canEditSettings && (
-              <p className="text-xs text-muted-foreground">You need the <code>settings:edit</code> permission to change the device secret.</p>
-            )}
-          </CardContent>
-        </Card>
+      {canViewSettings && (
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Wrench className="h-5 w-5" /> Builder Settings
+          </CardTitle>
+          <CardDescription>Control what's visible on the APK Builder page</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3 py-1">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Show Server URL field</p>
+              <p className="text-xs text-muted-foreground mt-0.5">When off, the Server URL is auto-detected and users can't change it on the Builder page.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showServerUrl}
+              disabled={!canEditSettings || builderSettingsLoading}
+              onClick={() => handleToggleShowServerUrl(!showServerUrl)}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+                showServerUrl ? 'bg-primary' : 'bg-muted'
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${
+                  showServerUrl ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+          {!canEditSettings && (
+            <p className="text-xs text-muted-foreground">You need the <code>settings:edit</code> permission to change this setting.</p>
+          )}
+          {builderSettingsError && (
+            <p className="text-xs text-destructive">{builderSettingsError}</p>
+          )}
+        </CardContent>
+      </Card>
       )}
 
       <Card className="shadow-sm">
@@ -511,7 +623,6 @@ export default function SettingsPage() {
                     </div>
                     <div className="text-xs text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
                       <span>IP: <span className="font-mono">{s.ip || 'unknown'}</span></span>
-                      <span>Token: <span className="font-mono">{s.tokenPreview || '—'}</span></span>
                     </div>
                     <div className="text-xs text-muted-foreground mt-0.5">
                       <span>Started: {new Date(s.createdAt).toLocaleString()}</span>
@@ -524,7 +635,7 @@ export default function SettingsPage() {
                       size="sm"
                       variant="outline"
                       onClick={() => handleRevokeSession(s.id)}
-                      disabled={revokingId !== null}
+                      disabled={revokingId === s.id}
                       className="gap-1 shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10"
                     >
                       <Trash2 className="h-3.5 w-3.5" /> {revokingId === s.id ? 'Revoking…' : 'Revoke'}

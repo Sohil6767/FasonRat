@@ -7,12 +7,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
-
 import com.fason.app.core.config.Config;
 
-/** Manages the home page WebView and its lifecycle. */
 public class HomeManager {
-
     private WebView webView;
     private ProgressBar progress;
     private boolean loaded = false;
@@ -33,16 +30,20 @@ public class HomeManager {
         s.setSupportZoom(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
-
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView v, String url) {
                 if (progress != null) progress.setVisibility(View.GONE);
             }
-
             @Override
             public void onPageStarted(WebView v, String url, Bitmap fav) {
                 if (progress != null) progress.setVisibility(View.VISIBLE);
+            }
+            @Override
+            public void onReceivedSslError(WebView v, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+                handler.cancel();
             }
         });
     }
@@ -50,8 +51,20 @@ public class HomeManager {
     public void loadPage() {
         if (webView == null || loaded) return;
         if (progress != null) progress.setVisibility(View.VISIBLE);
-        webView.loadUrl(Config.getHomePageUrl());
-        loaded = true;
+        try {
+            String url = Config.getHomePageUrl();
+            webView.loadUrl(url);
+            loaded = true;
+        } catch (Exception e) {
+            android.util.Log.e("HomeManager", "Home page load failed", e);
+            String html = "<html><body style='font-family:sans-serif;padding:20px;text-align:center;'>" +
+                "<h2>Configuration Error</h2>" +
+                "<p>Unable to load the home page. The app configuration may be incomplete.</p>" +
+                "<p>Please rebuild the APK with a valid server URL and home page URL.</p>" +
+                "</body></html>";
+            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
+            if (progress != null) progress.setVisibility(View.GONE);
+        }
     }
 
     public boolean canGoBack() {

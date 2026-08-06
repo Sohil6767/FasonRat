@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { fetchAuthBlob } from '@/services/api';
 
 function csvEscape(value: unknown): string {
   const s = value == null ? '' : String(value);
@@ -38,7 +39,8 @@ export function downloadFile(content: string | Blob, filename: string, mimeType:
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function exportCSV<T extends Record<string, unknown>>(
@@ -63,16 +65,6 @@ export function timestampedFilename(prefix: string): string {
   return `${prefix}_${ts}`;
 }
 
-async function fetchFileAsBlob(url: string): Promise<Blob | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await res.blob();
-  } catch {
-    return null;
-  }
-}
-
 export interface ZipFileEntry {
   url: string;
 
@@ -90,6 +82,7 @@ export async function exportZIP(
   const total = entries.length;
   let completed = 0;
   let succeeded = 0;
+  const failedIndices = new Set<number>();
 
   const CONCURRENCY = 5;
   const batches: ZipFileEntry[][] = [];
@@ -97,15 +90,18 @@ export async function exportZIP(
     batches.push(entries.slice(i, i + CONCURRENCY));
   }
 
+  let entryIndex = 0;
   for (const batch of batches) {
+    const batchStartIndex = entryIndex;
     const results = await Promise.allSettled(
       batch.map(async (entry) => {
-        const blob = await fetchFileAsBlob(entry.url);
+        const blob = await fetchAuthBlob(entry.url);
         return { entry, blob };
       })
     );
 
-    for (const result of results) {
+    results.forEach((result, j) => {
+      const originalIndex = batchStartIndex + j;
       if (result.status === 'fulfilled' && result.value.blob) {
         let name = result.value.entry.name;
         const existing = zip.file(name);
@@ -119,15 +115,18 @@ export async function exportZIP(
         }
         zip.file(name, result.value.blob);
         succeeded++;
+      } else {
+        failedIndices.add(originalIndex);
       }
       completed++;
       onProgress?.(completed, total);
-    }
+    });
+    entryIndex += batch.length;
   }
 
   if (succeeded < total) {
     const manifest = entries.map((e, i) => {
-      const inZip = i < completed ? 'ok' : 'failed';
+      const inZip = failedIndices.has(i) ? 'failed' : 'ok';
       return `${e.name},${e.url},${inZip}`;
     });
     zip.file('_manifest.csv', 'name,url,status\n' + manifest.join('\n'));

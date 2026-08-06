@@ -1,7 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-function Button({ className, variant = "default", size = "default", ...props }: React.ComponentProps<"button"> & {
+function Button({ className, variant = "default", size = "default", type = "button", ...props }: React.ComponentProps<"button"> & {
   variant?: "default" | "destructive" | "outline" | "secondary" | "ghost" | "link"
   size?: "default" | "sm" | "lg" | "icon"
 }) {
@@ -23,6 +23,8 @@ function Button({ className, variant = "default", size = "default", ...props }: 
 
   return (
     <button
+
+      type={type}
       className={cn(
         "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 cursor-pointer",
         variants[variant],

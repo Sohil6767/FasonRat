@@ -35,6 +35,8 @@ export interface DeviceDataState<T> {
 
   commandSummary: string | null;
 
+  commandId: string | null;
+
   clearData: () => void;
 }
 
@@ -65,7 +67,6 @@ export function useDeviceData<T>({
   extractData,
   dataType,
   defaultValue,
-  socketDebounceMs = 2000,
   staleTimeMs = 15000,
 }: UseDeviceDataOptions<T>): DeviceDataState<T> {
   const cacheKey = `${clientId}:${page}`;
@@ -78,6 +79,7 @@ export function useDeviceData<T>({
   const [error, setError] = useState<string | null>(null);
   const [commandStatus, setCommandStatus] = useState<CommandStatus>('idle');
   const [commandSummary, setCommandSummary] = useState<string | null>(null);
+  const [commandId, setCommandId] = useState<string | null>(null);
   const commandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeCommandIdRef = useRef<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(() => {
@@ -90,16 +92,13 @@ export function useDeviceData<T>({
 
   const dataTypes = useMemo(
     () => (Array.isArray(dataType) ? dataType : [dataType]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
     [Array.isArray(dataType) ? dataType.join(',') : dataType]
   );
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const lastRefreshRef = useRef(pageCache.has(cacheKey) ? (pageCache.get(cacheKey)?.timestamp ?? 0) : 0);
-
   const hasDataRef = useRef(pageCache.has(cacheKey));
-  hasDataRef.current = data !== defaultValue;
 
   const clearCommandTimer = useCallback(() => {
     if (commandTimerRef.current) {
@@ -130,6 +129,8 @@ export function useDeviceData<T>({
         const now = Date.now();
         setLastUpdated(now);
         pageCache.set(cacheKey, { data: extracted, timestamp: now });
+
+        hasDataRef.current = true;
       } else {
         setError(res.data.error || 'Failed to load data');
       }
@@ -139,7 +140,6 @@ export function useDeviceData<T>({
     }
     if (!controller.signal.aborted) {
       setLoading(false);
-      lastRefreshRef.current = Date.now();
     }
   }, [clientId, page, cacheKey]);
 
@@ -156,42 +156,62 @@ export function useDeviceData<T>({
         abortRef.current.abort();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [cacheKey]);
 
   useEffect(() => {
     const unsub = onDataUpdate((cid, type) => {
       if (cid === clientId && dataTypes.includes(type)) {
-        const now = Date.now();
-        if (now - lastRefreshRef.current < socketDebounceMs) return;
-        lastRefreshRef.current = now;
         refresh();
       }
     });
     return unsub;
-  }, [clientId, refresh, dataTypes, socketDebounceMs]);
+  }, [clientId, refresh, dataTypes]);
 
   useEffect(() => {
-    const unsub = onCommandStatus((cid, commandId, status, _dataType) => {
+    const unsub = onCommandStatus((cid, commandId, status, _dataType, error, summary) => {
       if (cid !== clientId) return;
 
       if (activeCommandIdRef.current && commandId !== activeCommandIdRef.current) return;
 
       if (status === 'delivered') {
         clearCommandTimer();
-        setCommandStatus('delivered');
+
+        setCommandStatus(prev => prev === 'responded' || prev === 'error' ? prev : 'delivered');
+        setCommandId(commandId);
       } else if (status === 'responded') {
         clearCommandTimer();
         setCommandStatus('responded');
+        setCommandId(commandId);
+
+        if (summary) setCommandSummary(summary);
+        else if (error) setCommandSummary(error);
         commandTimerRef.current = setTimeout(() => {
           setCommandStatus('idle');
           setCommandSummary(null);
+          setCommandId(null);
           activeCommandIdRef.current = null;
         }, 5000);
+
+        refresh();
+      } else if (status === 'error') {
+        clearCommandTimer();
+        setCommandStatus('error');
+        setCommandId(commandId);
+        if (error) setCommandSummary(error);
+        else if (summary) setCommandSummary(summary);
+        commandTimerRef.current = setTimeout(() => {
+          setCommandStatus('idle');
+          setCommandSummary(null);
+          setCommandId(null);
+          activeCommandIdRef.current = null;
+        }, 6000);
+
+        refresh();
       }
     });
     return unsub;
-  }, [clientId, clearCommandTimer]);
+  }, [clientId, clearCommandTimer, refresh]);
 
   const sendCommand = useCallback(
     async (cmd: string, params: Record<string, unknown> = {}): Promise<string> => {
@@ -207,9 +227,11 @@ export function useDeviceData<T>({
         const queued = res.data?.queued ?? false;
 
         activeCommandIdRef.current = commandId;
+        setCommandId(commandId);
 
         if (sent) {
-          setCommandStatus('sent');
+
+          setCommandStatus(prev => prev === 'delivered' || prev === 'responded' || prev === 'error' ? prev : 'sent');
 
           commandTimerRef.current = setTimeout(() => {
             setCommandStatus((prev) => prev === 'sent' ? 'delivered' : prev);
@@ -218,10 +240,12 @@ export function useDeviceData<T>({
           setCommandStatus('queued');
           commandTimerRef.current = setTimeout(() => {
             setCommandStatus('idle');
+            setCommandId(null);
             activeCommandIdRef.current = null;
           }, 10000);
         } else {
-          setCommandStatus('sent');
+
+          setCommandStatus(prev => prev === 'delivered' || prev === 'responded' || prev === 'error' ? prev : 'sent');
           commandTimerRef.current = setTimeout(() => {
             setCommandStatus((prev) => prev === 'sent' ? 'delivered' : prev);
           }, 15000);
@@ -230,8 +254,10 @@ export function useDeviceData<T>({
         return commandId;
       } catch {
         setCommandStatus('error');
+        setCommandId(null);
         commandTimerRef.current = setTimeout(() => {
           setCommandStatus('idle');
+          setCommandId(null);
           activeCommandIdRef.current = null;
         }, 4000);
         throw new Error('Command failed');
@@ -249,12 +275,12 @@ export function useDeviceData<T>({
   }, []);
 
   const clearData = useCallback(() => {
+    if (abortRef.current) abortRef.current.abort();
     pageCache.delete(cacheKey);
     setData(defaultValue);
     setError(null);
     setLastUpdated(null);
     hasDataRef.current = false;
-    lastRefreshRef.current = 0;
   }, [cacheKey, defaultValue]);
 
   return {
@@ -266,6 +292,7 @@ export function useDeviceData<T>({
     lastUpdated,
     commandStatus,
     commandSummary,
+    commandId,
     clearData,
   };
 }

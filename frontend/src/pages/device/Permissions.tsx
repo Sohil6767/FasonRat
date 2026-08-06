@@ -15,7 +15,7 @@ export default function PermissionsPage() {
     clientId,
     page: 'permissions',
     extractData: (d) => normalizePermissionList(extractList(d.list)),
-    dataType: ['permissions', 'perm_check'],
+    dataType: ['permissions'],
     defaultValue: [],
   });
 

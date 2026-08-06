@@ -1,96 +1,58 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { getDb, dbHelpers } from '../db/index.js';
-import { sessions } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { getAuth } from '../auth/index.js';
+import { dbHelpers } from '../db/index.js';
 import { resolvePermissions } from '../types/index.js';
-import type { JwtPayload, UserRole, Permission } from '../types/index.js';
+import type { SessionUser, UserRole, Permission } from '../types/index.js';
 
 export async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  let token: string | undefined;
-
-  const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    token = authHeader.substring(7);
-  }
-
-  if (!token) {
-    token = request.cookies.token;
-  }
-
-  if (!token) {
-    const queryToken = (request.query as Record<string, string | undefined>)?.token;
-    if (typeof queryToken === 'string') token = queryToken;
-  }
-
-  if (!token) {
-    reply.code(401).send({ success: false, error: 'Authentication required' });
-    return;
-  }
-
   try {
-    const decoded = request.server.jwt.verify(token) as JwtPayload;
-
-    const user = dbHelpers.getUserById(decoded.userId);
-    if (!user) {
-      reply.clearCookie('token', { path: '/' });
+    let headers = request.headers;
+    const authHeader = request.headers.authorization;
+    if (!authHeader) {
+      const cookieToken = request.cookies?.['fason.session_token'];
+      if (cookieToken) {
+        headers = { ...request.headers, authorization: `Bearer ${cookieToken}` };
+      }
+    }
+    const session = await getAuth().api.getSession({ headers });
+    if (!session || !session.user) {
+      reply.code(401).send({ success: false, error: 'Authentication required' });
+      return;
+    }
+    const dbUser = dbHelpers.getUserById(session.user.id);
+    if (!dbUser) {
       reply.code(401).send({ success: false, error: 'User not found' });
       return;
     }
-
-    const d = getDb();
-    if (decoded.sessionId) {
-      const activeSession = d.select({ token: sessions.token, expiresAt: sessions.expiresAt }).from(sessions)
-        .where(eq(sessions.token, decoded.sessionId))
-        .get();
-      if (!activeSession) {
-        reply.clearCookie('token', { path: '/' });
-        reply.code(401).send({ success: false, error: 'Session expired. Please log in again.' });
+    if (dbUser.banned) {
+      const banExpires = dbUser.banExpires;
+      const isBanExpired = banExpires && new Date(banExpires) < new Date();
+      if (!isBanExpired) {
+        reply.code(403).send({ success: false, error: 'Account banned' });
         return;
       }
-      if (new Date(activeSession.expiresAt) < new Date()) {
-        d.delete(sessions).where(eq(sessions.token, activeSession.token)).run();
-        reply.clearCookie('token', { path: '/' });
-        reply.code(401).send({ success: false, error: 'Session expired. Please log in again.' });
-        return;
-      }
-    } else {
-      const activeSession = d.select({ token: sessions.token, expiresAt: sessions.expiresAt }).from(sessions)
-        .where(eq(sessions.userId, user.id))
-        .get();
-      if (!activeSession) {
-        reply.clearCookie('token', { path: '/' });
-        reply.code(401).send({ success: false, error: 'Session expired. Please log in again.' });
-        return;
-      }
-      if (new Date(activeSession.expiresAt) < new Date()) {
-        d.delete(sessions).where(eq(sessions.token, activeSession.token)).run();
-        reply.clearCookie('token', { path: '/' });
-        reply.code(401).send({ success: false, error: 'Session expired. Please log in again.' });
-        return;
-      }
+      dbHelpers.updateUser(dbUser.id, { banned: false, banReason: null, banExpires: null } as any);
     }
-
-    const permissions = resolvePermissions(user.role as UserRole, user.permissions);
-
-    request.user = {
-      userId: user.id,
-      username: user.username,
-      email: user.email,
-      role: user.role as UserRole,
+    const permissions = resolvePermissions(dbUser.role as UserRole, dbUser.permissions);
+    const sessionUser: SessionUser = {
+      userId: dbUser.id,
+      username: dbUser.username,
+      email: dbUser.email,
+      role: dbUser.role as UserRole,
       permissions,
-
-      sessionId: decoded.sessionId,
+      sessionId: session.session.id,
+      sessionToken: session.session.token,
     };
-    (request as unknown as Record<string, unknown>).token = token;
-  } catch {
-    reply.clearCookie('token', { path: '/' });
-    reply.code(401).send({ success: false, error: 'Invalid token' });
+    request.user = sessionUser as any;
+  } catch (err) {
+    request.log?.error?.({ err }, 'auth middleware error');
+    reply.code(401).send({ success: false, error: 'Invalid session' });
   }
 }
 
 export function requirePermission(permission: Permission) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    const user = request.user as JwtPayload | undefined;
+    const user = request.user as SessionUser | undefined;
     if (!user) {
       reply.code(401).send({ success: false, error: 'Authentication required' });
       return;
@@ -102,20 +64,28 @@ export function requirePermission(permission: Permission) {
   };
 }
 
-export function hasPermission(user: JwtPayload | undefined, permission: Permission): boolean {
+export function hasPermission(user: SessionUser | undefined, permission: Permission): boolean {
   if (!user?.permissions) return false;
   return user.permissions.includes(permission);
 }
 
-export function getRequestUser(request: FastifyRequest): JwtPayload {
-  return request.user as JwtPayload;
+export function getRequestUser(request: FastifyRequest): SessionUser {
+  return request.user as SessionUser;
 }
 
-export function verifyJwtToken(token: string, jwtVerify: (token: string) => unknown): JwtPayload | null {
+export async function verifySessionToken(token: string): Promise<SessionUser | null> {
   try {
-    const decoded = jwtVerify(token) as JwtPayload;
-    const dbUser = dbHelpers.getUserById(decoded.userId);
+    const headers = new Headers();
+    headers.set('authorization', `Bearer ${token}`);
+    const session = await getAuth().api.getSession({ headers });
+    if (!session || !session.user) return null;
+    const dbUser = dbHelpers.getUserById(session.user.id);
     if (!dbUser) return null;
+    if (dbUser.banned) {
+      const isBanExpired = dbUser.banExpires && new Date(dbUser.banExpires) < new Date();
+      if (!isBanExpired) return null;
+      dbHelpers.updateUser(dbUser.id, { banned: false, banReason: null, banExpires: null } as any);
+    }
     const permissions = resolvePermissions(dbUser.role as UserRole, dbUser.permissions);
     return {
       userId: dbUser.id,
@@ -123,6 +93,8 @@ export function verifyJwtToken(token: string, jwtVerify: (token: string) => unkn
       email: dbUser.email,
       role: dbUser.role as UserRole,
       permissions,
+      sessionId: session.session.id,
+      sessionToken: session.session.token,
     };
   } catch {
     return null;

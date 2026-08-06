@@ -1,7 +1,3 @@
-# FasonRat Server
-# Usage: docker run -d -p 32766:32766 -v fasonrat-data:/app/backend/data fahimahamed/fasonrat:latest
-
-# Stage 1: Build frontend
 FROM node:22-slim AS frontend-build
 
 WORKDIR /app/frontend
@@ -10,7 +6,6 @@ RUN npm install --no-audit --no-fund --no-package-lock
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Compile backend TypeScript
 FROM node:22-slim AS backend-build
 
 WORKDIR /app/backend
@@ -20,15 +15,17 @@ COPY backend/tsconfig.json ./
 COPY backend/src ./src
 RUN npm run build
 
-# Stage 3: Install backend production dependencies only
 FROM node:22-slim AS backend-deps
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
 COPY backend/package.json ./
 RUN npm install --omit=dev --no-audit --no-fund --no-package-lock \
     && npm cache clean --force
 
-# Stage 4: Final image
 FROM node:22-slim
 
 ENV NODE_ENV=production
@@ -51,7 +48,6 @@ COPY backend/package.json ./backend/
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-# APK builder factory files
 COPY backend/app ./backend/app
 
 RUN mkdir -p /app/backend/data \

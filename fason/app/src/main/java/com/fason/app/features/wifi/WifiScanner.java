@@ -26,54 +26,52 @@ public final class WifiScanner {
     private static final long TIMEOUT = 15000;
     private static final AtomicBoolean scanning = new AtomicBoolean(false);
     private static final AtomicReference<JSONArray> cache = new AtomicReference<>();
+    private static volatile long cacheTime = 0;
+    private static final long CACHE_TTL_MS = 30000;
+
     private WifiScanner() {}
     public static JSONObject scan(Context ctx) {
         JSONObject result = new JSONObject();
         JSONArray networks = new JSONArray();
-
         try {
             result.put(Protocol.KEY_NETWORKS, networks);
             WifiManager wm = (WifiManager) ctx.getSystemService(Context.WIFI_SERVICE);
             LocationManager lm = (LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
-
             if (wm == null) {
                 result.put(Protocol.KEY_ERROR, "WiFi unavailable");
                 return result;
             }
-
             if (!wm.isWifiEnabled()) {
                 result.put(Protocol.KEY_ERROR, "WiFi disabled");
                 return result;
             }
-
             if (!PermissionManager.canIUse(Manifest.permission.ACCESS_FINE_LOCATION) &&
                 !PermissionManager.canIUse(Manifest.permission.ACCESS_COARSE_LOCATION)) {
                 result.put(Protocol.KEY_ERROR, "Location permission required");
                 return result;
             }
-
             boolean locEnabled = lm != null &&
                 (lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
                  lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER));
-
             if (!locEnabled) {
                 result.put(Protocol.KEY_ERROR, "Location service required");
                 return result;
             }
-
             JSONArray cached = cache.get();
-            if (cached != null && cached.length() > 0) {
+            boolean cacheFresh = cached != null && cached.length() > 0
+                && (System.currentTimeMillis() - cacheTime < CACHE_TTL_MS);
+            if (cacheFresh) {
                 result.put(Protocol.KEY_NETWORKS, cached);
                 result.put(Protocol.KEY_TOTAL, cached.length());
                 result.put(Protocol.KEY_CACHED, true);
                 return result;
             }
-
             JSONArray scanResults = asyncScan(ctx, wm);
             if (scanResults != null && scanResults.length() > 0) {
                 result.put(Protocol.KEY_NETWORKS, scanResults);
                 result.put(Protocol.KEY_TOTAL, scanResults.length());
                 cache.set(scanResults);
+                cacheTime = System.currentTimeMillis();
             } else {
                 List<ScanResult> sysResults = wm.getScanResults();
                 if (sysResults != null && !sysResults.isEmpty()) {
@@ -84,7 +82,6 @@ public final class WifiScanner {
                     result.put(Protocol.KEY_ERROR, "No networks found");
                 }
             }
-
         } catch (Exception e) {
             try { result.put(Protocol.KEY_ERROR, e.getMessage()); } catch (Exception ignored) {}
         }
@@ -111,7 +108,6 @@ public final class WifiScanner {
                 try { ctx.unregisterReceiver(this); } catch (Exception ignored) {}
             }
         };
-
         try {
             IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -123,18 +119,16 @@ public final class WifiScanner {
             scanning.set(false);
             return null;
         }
-
         if (!wm.startScan()) {
             try { ctx.unregisterReceiver(receiver); } catch (Exception ignored) {}
             scanning.set(false);
             return null;
         }
-
         try {
             latch.await(TIMEOUT, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ignored) {}
         try{
-            ctx.unregisterReceiver(receiver); 
+            ctx.unregisterReceiver(receiver);
         } catch (Exception ignored) {}
         scanning.set(false);
         return results.get();
@@ -154,11 +148,14 @@ public final class WifiScanner {
                 net.put(Protocol.KEY_SIGNAL_STRENGTH, calcSignal(sr.level));
                 net.put(Protocol.KEY_CAPABILITIES, sr.capabilities != null ? sr.capabilities : "");
                 net.put(Protocol.KEY_SECURE, sr.capabilities != null &&
-                    (sr.capabilities.contains("WPA") || sr.capabilities.contains("WEP")));
+                    (sr.capabilities.contains("WPA") || sr.capabilities.contains("WEP") ||
+                     sr.capabilities.contains("SAE") || sr.capabilities.contains("RSN")));
                 net.put(Protocol.KEY_CHANNEL, freqToChannel(sr.frequency));
-
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    net.put(Protocol.KEY_WIFI6, sr.capabilities != null && sr.capabilities.contains("WPA3"));
+                    net.put("wpa3", sr.capabilities != null && sr.capabilities.contains("WPA3"));
+                }
+                if (sr.frequency >= 5925 && sr.frequency <= 7125) {
+                    net.put(Protocol.KEY_WIFI6, true);
                 }
                 networks.put(net);
             } catch (Exception ignored) {}

@@ -1,7 +1,5 @@
 package com.fason.app.core.config;
 
-import android.content.Context;
-import android.content.res.AssetManager;
 import android.util.Log;
 import com.fason.app.core.FasonApp;
 import com.fason.app.core.Protocol;
@@ -10,20 +8,18 @@ import java.util.Properties;
 
 public final class Config {
     private static final String TAG = "Config";
+
     private Config() {}
     private static volatile String serverUrl;
     private static volatile String homePageUrl;
     private static volatile String deviceSecret;
     private static volatile boolean loaded = false;
+
     public static synchronized void init() {
         if (loaded) return;
         Properties props = new Properties();
-        try {
-            Context ctx = FasonApp.getContext();
-            AssetManager am = ctx.getAssets();
-            InputStream is = am.open(Protocol.CONFIG_FILE);
+        try (InputStream is = FasonApp.getContext().getAssets().open(Protocol.CONFIG_FILE)) {
             props.load(is);
-            is.close();
         } catch (Exception e) {
             Log.e(TAG, "Failed to load " + Protocol.CONFIG_FILE, e);
             throw new IllegalStateException(
@@ -43,8 +39,19 @@ public final class Config {
         }
         deviceSecret = props.getProperty(Protocol.CONFIG_KEY_DEVICE_SECRET, "");
         if (deviceSecret == null) deviceSecret = "";
+        if (deviceSecret.isEmpty()) {
+            throw new IllegalStateException(
+                "Missing required key '" + Protocol.CONFIG_KEY_DEVICE_SECRET
+                + "' in " + Protocol.CONFIG_FILE
+                + " - APK was not properly built (no device secret embedded)");
+        }
+        if (deviceSecret.contains("placeholder") || deviceSecret.contains("Please-enter")) {
+            throw new IllegalStateException(
+                "Device secret is a placeholder - APK was not properly built. "
+                + "Rebuild with a real device secret from the builder.");
+        }
         loaded = true;
-        Log.i(TAG, "Config loaded — server: " + serverUrl
+        Log.i(TAG, "Config loaded, server: " + serverUrl
             + ", home: " + homePageUrl
             + ", device_secret: " + (deviceSecret.isEmpty() ? "(none)" : "***"));
     }

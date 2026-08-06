@@ -32,6 +32,8 @@ export default function DeviceInfoPage() {
 
   const fetchInfo = useCallback(async () => {
     await sendCommand(CMD.INFO);
+
+    if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => { refresh(); loadClient(); }, 3000);
   }, [sendCommand, refresh, loadClient]);
 
@@ -88,7 +90,7 @@ export default function DeviceInfoPage() {
         <Card className="shadow-none">
           <CardContent className="p-3.5 flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <Smartphone className="h-4.5 w-4.5 text-primary" />
+              <Smartphone className="h-5 w-5 text-primary" />
             </div>
             <div className="min-w-0">
               <p className="font-medium text-sm truncate">{client.deviceModel || 'Unknown'}</p>
@@ -99,7 +101,7 @@ export default function DeviceInfoPage() {
         <Card className="shadow-none">
           <CardContent className="p-3.5 flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <Wifi className="h-4.5 w-4.5 text-primary" />
+              <Wifi className="h-5 w-5 text-primary" />
             </div>
             <div className="min-w-0">
               <p className="font-medium text-sm">{client.ip || 'N/A'}</p>
@@ -110,7 +112,7 @@ export default function DeviceInfoPage() {
         <Card className="shadow-none">
           <CardContent className="p-3.5 flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <PhoneIcon className="h-4.5 w-4.5 text-primary" />
+              <PhoneIcon className="h-5 w-5 text-primary" />
             </div>
             <div className="min-w-0">
               <p className="font-medium text-sm">Reconnects: {client.reconnectCount}</p>
@@ -186,8 +188,10 @@ export default function DeviceInfoPage() {
           {deviceInfo.phone && (
             <SectionCard title="Phone" icon={PhoneIcon}>
               <div className="grid grid-cols-2 gap-2 text-xs">
-                <div><span className="text-muted-foreground">IMEI</span><p className="font-medium font-mono">{deviceInfo.phone.imei || 'N/A'}</p></div>
-                <div><span className="text-muted-foreground">Number</span><p className="font-medium">{deviceInfo.phone.number || 'N/A'}</p></div>
+                <div><span className="text-muted-foreground">Carrier</span><p className="font-medium">{deviceInfo.phone.networkOperatorName || deviceInfo.network?.carrier || 'N/A'}</p></div>
+                <div><span className="text-muted-foreground">Network</span><p className="font-medium">{deviceInfo.phone.network || 'N/A'}</p></div>
+                <div><span className="text-muted-foreground">SIM Country</span><p className="font-medium">{deviceInfo.phone.simCountryIso || 'N/A'}</p></div>
+                <div><span className="text-muted-foreground">Phone Type</span><p className="font-medium">{deviceInfo.phone.phoneType || 'N/A'}</p></div>
               </div>
             </SectionCard>
           )}

@@ -5,7 +5,6 @@ import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
 
 public final class DummyLifecycleOwner implements LifecycleOwner {
-
     private static DummyLifecycleOwner instance;
     private final LifecycleRegistry registry;
 
@@ -19,6 +18,21 @@ public final class DummyLifecycleOwner implements LifecycleOwner {
             instance = new DummyLifecycleOwner();
         }
         return instance;
+    }
+
+    public void pause() {
+        registry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE);
+    }
+
+    public void resume() {
+        registry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
+    }
+
+    public static synchronized void reset() {
+        if (instance != null) {
+            instance.pause();
+        }
+        instance = null;
     }
 
     @Override

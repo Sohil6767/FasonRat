@@ -9,9 +9,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Download, File } from 'lucide-react';
 import { formatBytes, formatDate } from '@/lib/utils';
+import { downloadAuthFile } from '@/components/AuthMedia';
 
 export default function DownloadsPage() {
-  const { clientId, online: _online } = useOutletContext<DeviceOutletContext>();
+  const { clientId } = useOutletContext<DeviceOutletContext>();
 
   const { data: downloads, loading, error, refresh, commandStatus, clearData } = useDeviceData<ClientFile[]>({
     clientId,
@@ -22,6 +23,7 @@ export default function DownloadsPage() {
   });
 
   const [exporting, setExporting] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const fileActions = buildFileActions({
     files: downloads.map((f) => ({ url: `/api/files/${f.fileType === 'upload' ? 'uploads' : 'downloads'}/${clientId}/${f.id}`, name: f.originalName })),
@@ -43,7 +45,7 @@ export default function DownloadsPage() {
         commandStatus={commandStatus}
       />
 
-      {error && <ErrorAlert message={error} onRetry={refresh} />}
+      {(error || downloadError) && <ErrorAlert message={downloadError || error!} onRetry={() => { setDownloadError(null); refresh(); }} />}
 
       {loading && !error ? (
         <LoadingSkeleton rows={5} />
@@ -74,13 +76,22 @@ export default function DownloadsPage() {
                     </div>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">{formatBytes(file.fileSize)}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground hidden sm:table-cell whitespace-nowrap">{file.createdAt ? formatDate(file.createdAt) : '—'}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground hidden sm:table-cell whitespace-nowrap">{file.createdAt ? formatDate(file.createdAt) : '-'}</TableCell>
                   <TableCell>
-                    <a href={`/api/files/${file.fileType === 'upload' ? 'uploads' : 'downloads'}/${clientId}/${file.id}`} download>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Download file">
-                        <Download className="h-3.5 w-3.5" />
-                      </Button>
-                    </a>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      aria-label="Download file"
+                      onClick={async () => {
+                        setDownloadError(null);
+                        const ok = await downloadAuthFile(`/api/files/${file.fileType === 'upload' ? 'uploads' : 'downloads'}/${clientId}/${file.id}`, file.originalName);
+
+                        if (!ok) setDownloadError('Failed to download file.');
+                      }}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}

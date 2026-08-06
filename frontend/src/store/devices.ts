@@ -10,8 +10,8 @@ interface DevicesState {
   selectedDevice: ClientDevice | null;
   isLoading: boolean;
   error: string | null;
-  fetchDashboard: () => Promise<void>;
-  fetchClients: () => Promise<void>;
+  fetchDashboard: (silent?: boolean) => Promise<void>;
+  fetchClients: (silent?: boolean) => Promise<void>;
   selectDevice: (device: ClientDevice | null) => void;
   deleteDevice: (id: string) => Promise<boolean>;
 }
@@ -24,8 +24,9 @@ export const useDevicesStore = create<DevicesState>((set, get) => ({
   isLoading: false,
   error: null,
 
-  fetchDashboard: async () => {
-    set({ isLoading: true, error: null });
+  fetchDashboard: async (silent = false) => {
+
+    if (!silent) set({ isLoading: true, error: null });
     try {
       const res = await dashboardApi.getData();
       if (res.data.success) {
@@ -46,8 +47,8 @@ export const useDevicesStore = create<DevicesState>((set, get) => ({
     }
   },
 
-  fetchClients: async () => {
-    set({ isLoading: true, error: null });
+  fetchClients: async (silent = false) => {
+    if (!silent) set({ isLoading: true, error: null });
     try {
       const res = await clientsApi.getAll();
       if (res.data.success) {

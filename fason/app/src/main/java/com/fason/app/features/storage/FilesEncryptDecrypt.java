@@ -1,5 +1,6 @@
 package com.fason.app.features.storage;
 
+import android.os.Build;
 import android.util.Base64;
 import java.io.File;
 import java.io.FileInputStream;
@@ -24,8 +25,8 @@ public final class FilesEncryptDecrypt {
     private static final int PBKDF2_ITERATIONS = 200_000;
     private static final int KEY_LEN_BITS = 256;
     private static final int CHUNK = 64 * 1024;
+
     private FilesEncryptDecrypt() {}
-    
     public static byte[] encrypt(byte[] plaintext, String password) {
         if (plaintext == null || password == null || password.isEmpty()) return null;
         try {
@@ -87,16 +88,20 @@ public final class FilesEncryptDecrypt {
 
     public static boolean encryptFile(String srcPath, String password) {
         if (password == null || password.isEmpty()) return false;
-        File f = new File(srcPath);
-        if (f.isDirectory()) return encryptFolder(srcPath, password);
-        return transformInPlace(srcPath, password, true);
+        File f = FileManager.safeFile(srcPath);
+        if (f == null) return false;
+        if (f.isDirectory()) return encryptFolder(f.getAbsolutePath(), password);
+        if (isEncrypted(f.getAbsolutePath())) return true;
+        return transformInPlace(f.getAbsolutePath(), password, true);
     }
 
     public static boolean decryptFile(String srcPath, String password) {
         if (password == null || password.isEmpty()) return false;
-        File f = new File(srcPath);
-        if (f.isDirectory()) return decryptFolder(srcPath, password);
-        return transformInPlace(srcPath, password, false);
+        File f = FileManager.safeFile(srcPath);
+        if (f == null) return false;
+        if (f.isDirectory()) return decryptFolder(f.getAbsolutePath(), password);
+        if (!isEncrypted(f.getAbsolutePath())) return false;
+        return transformInPlace(f.getAbsolutePath(), password, false);
     }
 
     public static boolean encryptFolder(String dirPath, String password) {
@@ -132,7 +137,7 @@ public final class FilesEncryptDecrypt {
         }
         return allOk;
     }
-    
+
     public static boolean isEncrypted(String path) {
         try (FileInputStream fis = new FileInputStream(path)) {
             byte[] header = new byte[2];
@@ -142,7 +147,7 @@ public final class FilesEncryptDecrypt {
             return false;
         }
     }
-    
+
     private static boolean transformInPlace(String srcPath, String password, boolean encrypting) {
         if (srcPath == null || srcPath.isEmpty()) return false;
         File src = new File(srcPath);
@@ -159,15 +164,15 @@ public final class FilesEncryptDecrypt {
                 tmp.delete();
                 return false;
             }
-            if (!src.delete()) {
-                tmp.delete();
-                return false;
+            if (tmp.renameTo(src)) {
+                return true;
             }
-            if (!tmp.renameTo(src)) {
-                if (!copyFile(tmp, src)) { tmp.delete(); return false; }
+            if (copyFile(tmp, src)) {
                 tmp.delete();
+                return true;
             }
-            return true;
+            tmp.delete();
+            return false;
         } catch (Exception e) {
             if (tmp != null) tmp.delete();
             return false;
@@ -221,9 +226,9 @@ public final class FilesEncryptDecrypt {
             int version = fis.read();
             if (magic != MAGIC || version != VERSION) return false;
             byte[] salt = new byte[SALT_LEN];
-            if (fis.read(salt) != SALT_LEN) return false;
+            new java.io.DataInputStream(fis).readFully(salt);
             byte[] nonce = new byte[NONCE_LEN];
-            if (fis.read(nonce) != NONCE_LEN) return false;
+            new java.io.DataInputStream(fis).readFully(nonce);
             pass = password.toCharArray();
             SecretKey key = deriveKey(pass, salt);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
@@ -254,7 +259,7 @@ public final class FilesEncryptDecrypt {
              FileOutputStream out = new FileOutputStream(dst);
              FileChannel inCh = in.getChannel();
              FileChannel outCh = out.getChannel()) {
-            inCh.transferTo(0, inCh.size(), outCh);
+            outCh.transferFrom(inCh, 0, inCh.size());
             return dst.exists() && dst.length() == src.length();
         } catch (Exception e) {
             return false;
@@ -273,7 +278,13 @@ public final class FilesEncryptDecrypt {
     private static SecretKey deriveKey(char[] pass, byte[] salt) throws Exception {
         PBEKeySpec spec = new PBEKeySpec(pass, salt, PBKDF2_ITERATIONS, KEY_LEN_BITS);
         try {
-            SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            String algo;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                algo = "PBKDF2WithHmacSHA256";
+            } else {
+                algo = "PBKDF2WithHmacSHA1";
+            }
+            SecretKeyFactory skf = SecretKeyFactory.getInstance(algo);
             byte[] keyBytes = skf.generateSecret(spec).getEncoded();
             return new SecretKeySpec(keyBytes, "AES");
         } finally {

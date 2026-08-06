@@ -3,6 +3,8 @@ package com.fason.app.core;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
+import android.util.Log;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
@@ -12,7 +14,8 @@ import com.fason.app.worker.KeepAliveWorker;
 import java.util.concurrent.TimeUnit;
 
 public class FasonApp extends Application {
-    private static FasonApp instance;
+    private static volatile FasonApp instance;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -20,6 +23,7 @@ public class FasonApp extends Application {
         try {
             Config.init();
         } catch (Throwable t) {
+            Log.e("FasonApp", "Config init failed", t);
             return;
         }
         startServices();
@@ -27,13 +31,17 @@ public class FasonApp extends Application {
 
     private void startServices() {
         try {
-            startForegroundService(new Intent(this, MainService.class));
+            Intent svcIntent = new Intent(this, MainService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(svcIntent);
+            } else {
+                startService(svcIntent);
+            }
         } catch (Exception ignored) {}
         try {
             PeriodicWorkRequest work = new PeriodicWorkRequest.Builder(
                 KeepAliveWorker.class, 15, TimeUnit.MINUTES
             ).build();
-
             WorkManager.getInstance(this).enqueueUniquePeriodicWork(
                 Protocol.WORK_KEEP_ALIVE,
                 ExistingPeriodicWorkPolicy.KEEP,

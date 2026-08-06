@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useDeviceData } from '@/hooks/useDeviceData';
 import type { DeviceOutletContext, FileEntry } from '@/types';
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { formatBytes, cn } from '@/lib/utils';
 import { onTransferUpdate, onCommandStatus } from '@/services/socket';
+import { useConfirm, PasswordDialog, PromptDialog } from '@/components/ConfirmDialog';
 
 function getFileExt(name: string): string {
   const idx = name.lastIndexOf('.');
@@ -154,9 +155,33 @@ export default function FilesPage() {
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const pendingCountRef = useRef(0);
+  const failedCountRef = useRef(0);
+  const totalCountRef = useRef(0);
   const shouldRefreshRef = useRef(false);
   const currentPathRef = useRef('');
+  const lastServerErroredRef = useRef<string | null>(null);
+
+  const bulkCommandIds = useRef<Set<string>>(new Set());
+
+  const finalizeBulkOperationRef = useRef<() => void>(() => {});
   currentPathRef.current = currentPath;
+
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [pwdDialog, setPwdDialog] = useState<{
+    open: boolean;
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    requireConfirm?: boolean;
+    minLength?: number;
+    onConfirm: (pwd: string) => void;
+  } | null>(null);
+  const [renameDialog, setRenameDialog] = useState<{
+    open: boolean;
+    filePath: string;
+    fileName: string;
+    defaultValue: string;
+  } | null>(null);
 
   const { data: rawData, loading, error: hookError, refresh, sendCommand, commandStatus, clearData } = useDeviceData<{
     files: FileEntry[];
@@ -208,10 +233,16 @@ export default function FilesPage() {
   }, [serverPath]);
 
   useEffect(() => {
-    if (serverError && files.length === 0 && !localError) {
+    setSelectedPaths(new Set());
+  }, [currentPath]);
+
+  useEffect(() => {
+
+    if (serverError && files.length === 0 && serverError !== lastServerErroredRef.current) {
+      lastServerErroredRef.current = serverError;
       setLocalError(serverError);
     }
-  }, [serverError, files.length, localError]);
+  }, [serverError, files.length]);
 
   useEffect(() => {
     const unsub = onTransferUpdate((cid, transfer) => {
@@ -229,18 +260,16 @@ export default function FilesPage() {
   }, [clientId]);
 
   useEffect(() => {
-    const unsub = onCommandStatus((cid, _commandId, status) => {
-      if (cid !== clientId || status !== 'responded') return;
-      if (pendingCountRef.current > 0) {
+    const unsub = onCommandStatus((cid, cmdId, status) => {
+      if (cid !== clientId) return;
+      if (status !== 'responded' && status !== 'error') return;
+
+      if (pendingCountRef.current > 0 && bulkCommandIds.current.has(cmdId)) {
+        bulkCommandIds.current.delete(cmdId);
+        if (status === 'error') failedCountRef.current++;
         pendingCountRef.current--;
         if (pendingCountRef.current === 0) {
-          setTransferStatus(prev => prev ? { ...prev, status: 'success', message: 'Done.' } : prev);
-          if (shouldRefreshRef.current) {
-            browseTo(currentPathRef.current || STORAGE_ROOT);
-          }
-
-          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-          statusTimerRef.current = setTimeout(() => setTransferStatus(null), 3000);
+          finalizeBulkOperationRef.current();
         }
       }
     });
@@ -266,20 +295,50 @@ export default function FilesPage() {
     }
   };
 
+  const finalizeBulkOperation = useCallback(() => {
+    if (pendingCountRef.current > 0) return;
+    const failed = failedCountRef.current;
+    const total = totalCountRef.current;
+    failedCountRef.current = 0;
+    totalCountRef.current = 0;
+    bulkCommandIds.current.clear();
+    if (failed > 0) {
+      const allFailed = failed === total;
+      setTransferStatus(prev => prev ? {
+        ...prev,
+        status: allFailed ? 'error' : 'success',
+        message: allFailed
+          ? 'Operation failed on device.'
+          : `Done (${failed} of ${total} failed).`,
+      } : prev);
+    } else {
+      setTransferStatus(prev => prev ? { ...prev, status: 'success', message: 'Done.' } : prev);
+    }
+    if (shouldRefreshRef.current) {
+      browseTo(currentPathRef.current || STORAGE_ROOT);
+    }
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setTransferStatus(null), 3000);
+  }, []);
+  finalizeBulkOperationRef.current = finalizeBulkOperation;
+
   const downloadFile = async (filePath: string, fileName: string) => {
     const isFolder = files.find(f => (f.path || `${currentPath}/${f.name}`) === filePath)?.isDir;
     const msg = isFolder
       ? `Download all files in "${fileName}"?`
       : `Download "${fileName}"?`;
-    if (!window.confirm(msg)) return;
+    const ok = await confirm({ title: 'Download File', description: msg, confirmLabel: 'Download' });
+    if (!ok) return;
     setTransferStatus({ name: fileName, status: 'downloading', message: 'Downloading...' });
     pendingCountRef.current = 1;
+    totalCountRef.current = 1;
     shouldRefreshRef.current = false;
     try {
       await sendCommand(CMD.FILES, { action: 'dl', path: filePath });
     } catch {
       setTransferStatus({ name: fileName, status: 'error', message: 'Failed to send download command' });
       pendingCountRef.current = 0;
+      totalCountRef.current = 0;
     }
   };
 
@@ -293,10 +352,13 @@ export default function FilesPage() {
       try {
         const res = await filesApi.pushToDevice(clientId, dstDir, file);
         if (res.data.success) {
-          setTransferStatus({ name: file.name, status: 'success', message: `Uploaded: ${file.name}` });
+
+          setTransferStatus({ name: file.name, status: 'success', message: `Sent ${file.name} to device. Refreshing...` });
+
           browseTo(currentPathRef.current || STORAGE_ROOT);
+          setTimeout(() => browseTo(currentPathRef.current || STORAGE_ROOT), 1500);
           if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-          statusTimerRef.current = setTimeout(() => setTransferStatus(null), 3000);
+          statusTimerRef.current = setTimeout(() => setTransferStatus(null), 4000);
         } else {
           setTransferStatus({ name: file.name, status: 'error', message: res.data.error || 'Upload failed' });
         }
@@ -310,70 +372,104 @@ export default function FilesPage() {
   const deleteFile = async (filePath: string, fileName: string) => {
     const isFolder = files.find(f => (f.path || `${currentPath}/${f.name}`) === filePath)?.isDir;
     const msg = isFolder
-      ? `Delete "${fileName}" and all its contents? This cannot be undone.`
-      : `Delete "${fileName}"? This cannot be undone.`;
-    if (!window.confirm(msg)) return;
+      ? `Delete "${fileName}" and all its contents? This is irreversible.`
+      : `Delete "${fileName}"? This is irreversible.`;
+    const ok = await confirm({ title: 'Delete File', description: msg, confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     setTransferStatus({ name: fileName, status: 'downloading', message: 'Deleting...' });
     pendingCountRef.current = 1;
+    totalCountRef.current = 1;
     shouldRefreshRef.current = true;
     try {
       await sendCommand(CMD.FILES, { action: 'delete', path: filePath });
     } catch {
       setTransferStatus({ name: fileName, status: 'error', message: 'Failed to send delete command' });
       pendingCountRef.current = 0;
+      totalCountRef.current = 0;
     }
   };
 
-  const renameFile = async (filePath: string, fileName: string) => {
-    const newName = window.prompt(`New name for "${fileName}":`, fileName);
+  const renameFile = (filePath: string, fileName: string) => {
+    setRenameDialog({ open: true, filePath, fileName, defaultValue: fileName });
+  };
+
+  const performRename = async (newName: string) => {
+    if (!renameDialog) return;
+    const { filePath, fileName } = renameDialog;
+    setRenameDialog(null);
     if (!newName || newName === fileName) return;
     setTransferStatus({ name: fileName, status: 'downloading', message: 'Renaming...' });
     pendingCountRef.current = 1;
+    totalCountRef.current = 1;
     shouldRefreshRef.current = true;
     try {
       await sendCommand(CMD.FILES, { action: 'rename', path: filePath, newName });
     } catch {
       setTransferStatus({ name: fileName, status: 'error', message: 'Failed to send rename command' });
       pendingCountRef.current = 0;
+      totalCountRef.current = 0;
     }
   };
 
-  const encryptFile = async (filePath: string, fileName: string) => {
+  const encryptFile = (filePath: string, fileName: string) => {
     const isFolder = files.find(f => (f.path || `${currentPath}/${f.name}`) === filePath)?.isDir;
-    const promptMsg = isFolder
-      ? `Encrypt all files in "${fileName}"?\nSame password for all. Already encrypted files are skipped.\nWithout this password, files cannot be recovered.`
-      : `Encrypt "${fileName}"?\nEnter a password. The file will be replaced with encrypted data.\nWithout this password, the file cannot be recovered.`;
-    const password = window.prompt(promptMsg);
-    if (!password || password.length < 4) {
-      if (password !== null) alert('Password must be at least 4 characters.');
-      return;
-    }
+    const desc = isFolder
+      ? `Encrypt all files in "${fileName}"? Same password for all. Already encrypted files are skipped. Without this password, files cannot be recovered.`
+      : `Encrypt "${fileName}"? The file will be replaced with encrypted data. Without this password, the file cannot be recovered.`;
+    setPwdDialog({
+      open: true,
+      title: `Encrypt ${isFolder ? 'Folder' : 'File'}`,
+      description: desc,
+      confirmLabel: 'Encrypt',
+      requireConfirm: true,
+      minLength: 4,
+      onConfirm: (password) => doEncrypt(filePath, fileName, password),
+    });
+  };
+
+  const doEncrypt = async (filePath: string, fileName: string, password: string) => {
+    setPwdDialog(null);
     setTransferStatus({ name: fileName, status: 'downloading', message: 'Encrypting...' });
     pendingCountRef.current = 1;
+    totalCountRef.current = 1;
     shouldRefreshRef.current = true;
     try {
       await sendCommand(CMD.FILES, { action: 'encrypt', path: filePath, password });
     } catch {
       setTransferStatus({ name: fileName, status: 'error', message: 'Failed to send encrypt command' });
       pendingCountRef.current = 0;
+      totalCountRef.current = 0;
     }
   };
 
-  const decryptFile = async (filePath: string, fileName: string) => {
+  const decryptFile = (filePath: string, fileName: string) => {
     const isFolder = files.find(f => (f.path || `${currentPath}/${f.name}`) === filePath)?.isDir;
-    const promptMsg = isFolder
-      ? `Decrypt all encrypted files in "${fileName}"?\nNon-encrypted files are skipped.\nWrong password = files stay encrypted.`
-      : `Decrypt "${fileName}"?\nEnter the password.\nWrong password = file stays encrypted.`;
-    const password = window.prompt(promptMsg);
-    if (!password) return;
+    const desc = isFolder
+      ? `Decrypt all encrypted files in "${fileName}"? Non-encrypted files are skipped. Wrong password = files stay encrypted.`
+      : `Decrypt "${fileName}"? Wrong password = file stays encrypted.`;
+    setPwdDialog({
+      open: true,
+      title: `Decrypt ${isFolder ? 'Folder' : 'File'}`,
+      description: desc,
+      confirmLabel: 'Decrypt',
+      requireConfirm: false,
+      minLength: 1,
+      onConfirm: (password) => doDecrypt(filePath, fileName, password),
+    });
+  };
+
+  const doDecrypt = async (filePath: string, fileName: string, password: string) => {
+    setPwdDialog(null);
     setTransferStatus({ name: fileName, status: 'downloading', message: 'Decrypting...' });
     pendingCountRef.current = 1;
+    totalCountRef.current = 1;
     shouldRefreshRef.current = true;
     try {
       await sendCommand(CMD.FILES, { action: 'decrypt', path: filePath, password });
     } catch {
       setTransferStatus({ name: fileName, status: 'error', message: 'Failed to send decrypt command' });
       pendingCountRef.current = 0;
+      totalCountRef.current = 0;
     }
   };
 
@@ -400,52 +496,104 @@ export default function FilesPage() {
   const clearSelection = () => setSelectedPaths(new Set());
 
   const bulkDownload = async () => {
-    for (const path of selectedPaths) {
-      await sendCommand(CMD.FILES, { action: 'dl', path });
-    }
-    setTransferStatus({ name: `${selectedPaths.size} items`, status: 'success', message: `Downloading ${selectedPaths.size} selected items...` });
+    const count = selectedPaths.size;
+    const paths = [...selectedPaths];
     clearSelection();
+    setTransferStatus({ name: `${count} items`, status: 'downloading', message: `Downloading ${count} selected items...` });
+    pendingCountRef.current = count;
+    totalCountRef.current = count;
+    shouldRefreshRef.current = true;
+    bulkCommandIds.current.clear();
+    for (const path of paths) {
+      try {
+        const cmdId = await sendCommand(CMD.FILES, { action: 'dl', path });
+        if (cmdId) bulkCommandIds.current.add(cmdId);
+      } catch { pendingCountRef.current--; failedCountRef.current++; }
+    }
+
+    if (pendingCountRef.current === 0) finalizeBulkOperation();
   };
 
-  const bulkEncrypt = async () => {
+  const bulkEncrypt = () => {
     const count = selectedPaths.size;
-    const password = window.prompt(`Encrypt ${count} selected items?\nEnter a password. Without it, files cannot be recovered.`);
-    if (!password || password.length < 4) { if (password !== null) alert('Password must be at least 4 characters.'); return; }
+    setPwdDialog({
+      open: true,
+      title: `Encrypt ${count} Items`,
+      description: `Enter a password. Without it, files cannot be recovered.`,
+      confirmLabel: 'Encrypt',
+      requireConfirm: true,
+      minLength: 4,
+      onConfirm: (password) => doBulkEncrypt(password, count),
+    });
+  };
+
+  const doBulkEncrypt = async (password: string, count: number) => {
+    setPwdDialog(null);
     setTransferStatus({ name: `${count} items`, status: 'downloading', message: `Encrypting ${count} items...` });
     const paths = [...selectedPaths];
     clearSelection();
     pendingCountRef.current = count;
+    totalCountRef.current = count;
     shouldRefreshRef.current = true;
+    bulkCommandIds.current.clear();
     for (const path of paths) {
-      try { await sendCommand(CMD.FILES, { action: 'encrypt', path, password }); } catch { pendingCountRef.current--; }
+      try {
+        const cmdId = await sendCommand(CMD.FILES, { action: 'encrypt', path, password });
+        if (cmdId) bulkCommandIds.current.add(cmdId);
+      } catch { pendingCountRef.current--; failedCountRef.current++; }
     }
+    if (pendingCountRef.current === 0) finalizeBulkOperation();
   };
 
-  const bulkDecrypt = async () => {
+  const bulkDecrypt = () => {
     const count = selectedPaths.size;
-    const password = window.prompt(`Decrypt ${count} selected items?\nEnter the password.`);
-    if (!password) return;
+    setPwdDialog({
+      open: true,
+      title: `Decrypt ${count} Items`,
+      description: 'Enter the password. Wrong password = files stay encrypted.',
+      confirmLabel: 'Decrypt',
+      requireConfirm: false,
+      minLength: 1,
+      onConfirm: (password) => doBulkDecrypt(password, count),
+    });
+  };
+
+  const doBulkDecrypt = async (password: string, count: number) => {
+    setPwdDialog(null);
     setTransferStatus({ name: `${count} items`, status: 'downloading', message: `Decrypting ${count} items...` });
     const paths = [...selectedPaths];
     clearSelection();
     pendingCountRef.current = count;
+    totalCountRef.current = count;
     shouldRefreshRef.current = true;
+    bulkCommandIds.current.clear();
     for (const path of paths) {
-      try { await sendCommand(CMD.FILES, { action: 'decrypt', path, password }); } catch { pendingCountRef.current--; }
+      try {
+        const cmdId = await sendCommand(CMD.FILES, { action: 'decrypt', path, password });
+        if (cmdId) bulkCommandIds.current.add(cmdId);
+      } catch { pendingCountRef.current--; failedCountRef.current++; }
     }
+    if (pendingCountRef.current === 0) finalizeBulkOperation();
   };
 
   const bulkDelete = async () => {
     const count = selectedPaths.size;
-    if (!window.confirm(`Delete ${count} selected items? This cannot be undone.`)) return;
+    const ok = await confirm({ title: `Delete ${count} Items`, description: `Delete ${count} selected items? This is irreversible.`, confirmLabel: 'Delete', variant: 'destructive' });
+    if (!ok) return;
     setTransferStatus({ name: `${count} items`, status: 'downloading', message: `Deleting ${count} items...` });
     const paths = [...selectedPaths];
     clearSelection();
     pendingCountRef.current = count;
+    totalCountRef.current = count;
     shouldRefreshRef.current = true;
+    bulkCommandIds.current.clear();
     for (const path of paths) {
-      try { await sendCommand(CMD.FILES, { action: 'delete', path }); } catch { pendingCountRef.current--; }
+      try {
+        const cmdId = await sendCommand(CMD.FILES, { action: 'delete', path });
+        if (cmdId) bulkCommandIds.current.add(cmdId);
+      } catch { pendingCountRef.current--; failedCountRef.current++; }
     }
+    if (pendingCountRef.current === 0) finalizeBulkOperation();
   };
 
   const goUp = () => {
@@ -643,6 +791,32 @@ export default function FilesPage() {
           <span>Showing {files.length} items in <span className="font-mono">{currentPath}</span></span>
           <span>Chunked transfer. No size limit.</span>
         </div>
+      )}
+
+      {}
+      {confirmDialog}
+      {pwdDialog && (
+        <PasswordDialog
+          open={pwdDialog.open}
+          title={pwdDialog.title}
+          description={pwdDialog.description}
+          confirmLabel={pwdDialog.confirmLabel}
+          requireConfirm={pwdDialog.requireConfirm}
+          minLength={pwdDialog.minLength}
+          onConfirm={pwdDialog.onConfirm}
+          onCancel={() => setPwdDialog(null)}
+        />
+      )}
+      {renameDialog && (
+        <PromptDialog
+          open={renameDialog.open}
+          title={`Rename "${renameDialog.fileName}"`}
+          label="New name"
+          defaultValue={renameDialog.defaultValue}
+          confirmLabel="Rename"
+          onConfirm={performRename}
+          onCancel={() => setRenameDialog(null)}
+        />
       )}
     </div>
   );

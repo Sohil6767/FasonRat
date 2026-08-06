@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { builderApi } from '@/services/api';
-import { onBuilderProgress, type BuilderProgress } from '@/services/socket';
+import type { BuilderProgress } from '@/services/socket';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,18 +24,10 @@ const STEP_LABELS: Record<BuildStep, string> = {
 const MAX_APP_NAME_LENGTH = 50;
 
 export default function BuilderPage() {
-  const getDefaultServerUrl = () => {
-    const protocol = window.location.protocol;
-    const host = window.location.hostname;
-    const port = window.location.port;
-    if (host && host !== 'localhost' && host !== '127.0.0.1') {
-      if (port) return `${protocol}//${host}:${port}`;
-      return `${protocol}//${host}`;
-    }
-    return 'http://127.0.0.1:32766';
-  };
-
-  const [serverUrl, setServerUrl] = useState(getDefaultServerUrl);
+  const [serverUrl, setServerUrl] = useState('http://127.0.0.1:32766');
+  const [detecting, setDetecting] = useState(true);
+  const [alternatives, setAlternatives] = useState<string[]>([]);
+  const [showServerUrl, setShowServerUrl] = useState(true);
   const [homePageUrl, setHomePageUrl] = useState('https://google.com');
   const [appName, setAppName] = useState('Fason');
   const [iconFile, setIconFile] = useState<File | null>(null);
@@ -54,19 +46,49 @@ export default function BuilderPage() {
   const buildingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onBuilderProgress((data: BuilderProgress) => {
-      setProgress(data);
-      if (data.complete) {
-        setBuilding(false);
-        if (buildingTimeoutRef.current) { clearTimeout(buildingTimeoutRef.current); buildingTimeoutRef.current = null; }
-        if (!data.error) setBuildComplete(true);
-      }
-    });
-    return () => {
-      unsubscribe();
-      if (buildingTimeoutRef.current) { clearTimeout(buildingTimeoutRef.current); buildingTimeoutRef.current = null; }
-    };
+    builderApi.getServerUrl()
+      .then(res => {
+        const data = res.data?.data;
+        if (data?.detected) {
+          setServerUrl(data.detected);
+        }
+        if (data?.alternatives && Array.isArray(data.alternatives)) {
+          setAlternatives(data.alternatives);
+        }
+        if (typeof data?.showServerUrl === 'boolean') {
+          setShowServerUrl(data.showServerUrl);
+        }
+      })
+      .catch(() => {
+        const protocol = window.location.protocol;
+        const host = window.location.hostname;
+        const port = window.location.port || '32766';
+        if (host && host !== 'localhost' && host !== '127.0.0.1') {
+          const fallback = port ? `${protocol}//${host}:${port}` : `${protocol}//${host}`;
+          setServerUrl(fallback);
+        }
+      })
+      .finally(() => setDetecting(false));
   }, []);
+
+  useEffect(() => {
+    if (!building) return;
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await builderApi.getStatus();
+        if (res.data?.data) {
+          setProgress(res.data.data);
+          if (res.data.data.complete) {
+            setBuilding(false);
+            if (buildingTimeoutRef.current) { clearTimeout(buildingTimeoutRef.current); buildingTimeoutRef.current = null; }
+            if (!res.data.data.error) setBuildComplete(true);
+            clearInterval(pollInterval);
+          }
+        }
+      } catch {}
+    }, 1000);
+    return () => clearInterval(pollInterval);
+  }, [building]);
 
   useEffect(() => {
     return () => {
@@ -80,16 +102,21 @@ export default function BuilderPage() {
       URL.revokeObjectURL(iconPreviewUrlRef.current);
       iconPreviewUrlRef.current = null;
     }
-    setIconFile(file);
     if (file) {
+
       if (!file.type.startsWith('image/')) {
-        setError('Please select a valid image file (PNG, JPEG, or WebP)');
+        setError('Select a valid image file (PNG, JPEG, or WebP)');
+        setIconFile(null);
+        setIconPreview(null);
         return;
       }
+      setIconFile(file);
       const url = URL.createObjectURL(file);
       iconPreviewUrlRef.current = url;
       setIconPreview(url);
+      setError(null);
     } else {
+      setIconFile(null);
       setIconPreview(null);
     }
   };
@@ -139,8 +166,8 @@ export default function BuilderPage() {
     if (buildingTimeoutRef.current) clearTimeout(buildingTimeoutRef.current);
     buildingTimeoutRef.current = setTimeout(() => {
       setBuilding(false);
-      setError('Build timed out — socket may have disconnected. Please retry.');
-    }, 5 * 60 * 1000);
+      setError('Build timed out. Retry.');
+    }, 10 * 60 * 1000);
     const formData = new FormData();
     formData.append('serverUrl', serverUrl.trim());
     formData.append('homePageUrl', homePageUrl.trim());
@@ -177,9 +204,26 @@ export default function BuilderPage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      setError('Failed to download APK. It may not be ready yet.');
+
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+
+      const blob = err?.response?.data;
+      if (blob instanceof Blob) {
+        try {
+          const text = await blob.text();
+          try {
+            const parsed = JSON.parse(text);
+            setError(parsed.error || 'Failed to download APK.');
+          } catch {
+            setError(text || 'Failed to download APK.');
+          }
+        } catch {
+          setError('Failed to download APK. It may not be ready yet.');
+        }
+      } else {
+        setError(err?.response?.data?.error || 'Failed to download APK. It may not be ready yet.');
+      }
     } finally {
       setDownloading(false);
       setDownloadProgress(0);
@@ -240,6 +284,7 @@ export default function BuilderPage() {
           <CardDescription>Configure the APK with your server details</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!detecting && showServerUrl && (
           <div className="space-y-2">
             <Label htmlFor="serverUrl">Server URL</Label>
             <Input
@@ -247,11 +292,37 @@ export default function BuilderPage() {
               value={serverUrl}
               onChange={(e) => { setServerUrl(e.target.value); setError(null); }}
               placeholder="http://your-server:32766"
-              disabled={building}
+              disabled={building || detecting}
               className="font-mono text-sm"
             />
-            <p className="text-xs text-muted-foreground">The URL where your Fason server is running</p>
+            <p className="text-xs text-muted-foreground">
+              {detecting ? 'Detecting server address...' : 'The address your device will connect to the server on'}
+            </p>
+            {!detecting && alternatives.length > 1 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {alternatives.map((alt) => {
+                  const isActive = alt === serverUrl;
+                  return (
+                    <button
+                      key={alt}
+                      type="button"
+                      onClick={() => { setServerUrl(alt); setError(null); }}
+                      disabled={building}
+                      className={`text-xs font-mono px-2 py-1 rounded-md border transition-colors ${
+                        isActive
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-muted/50 text-muted-foreground hover:border-primary/50 hover:text-foreground'
+                      }`}
+                      title={isActive ? 'Currently selected' : 'Click to use this address'}
+                    >
+                      {isActive ? '✓ ' : ''}{alt}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="homePageUrl">Home Page URL</Label>

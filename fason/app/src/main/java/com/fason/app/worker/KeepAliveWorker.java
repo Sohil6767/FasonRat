@@ -35,7 +35,17 @@ public class KeepAliveWorker extends Worker {
     private void ensureSocket() {
         try {
             SocketClient client = SocketClient.getInstance();
+            if (client == null) {
+                if (com.fason.app.service.MainService.getInstance() != null) {
+                    return;
+                }
+                SocketClient.reset();
+                client = SocketClient.getInstance();
+                if (client == null) return;
+            }
             if (client.getSocket() != null && !client.getSocket().connected()) {
+                client.reconnect();
+            } else if (client.getSocket() == null) {
                 client.reconnect();
             }
         } catch (Exception ignored) {}

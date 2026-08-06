@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { logsApi } from '@/services/api';
 import type { LogEntry } from '@/types';
 import { Card, CardContent } from '@/components/ui/card';
@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { FileText, RefreshCw, Trash2, Search, Filter } from 'lucide-react';
+import { FileText, RefreshCw, Trash2, Search, Filter, AlertCircle } from 'lucide-react';
 import { formatDate } from '@/lib/utils';
+import { useConfirm } from '@/components/ConfirmDialog';
+import { useAuthStore } from '@/store/auth';
 
 const logTypes = ['ALL', 'INFO', 'SUCCESS', 'ERROR', 'WARNING', 'CONNECTION', 'DISCONNECTION', 'COMMAND', 'DATA', 'AUTH'];
 const logCategories = ['ALL', 'SYSTEM', 'CLIENT', 'SOCKET', 'QUEUE', 'HTTP', 'BUILD', 'SECURITY'];
@@ -19,31 +21,54 @@ export default function LogsPage() {
   const [searchInput, setSearchInput] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const { hasPermission } = useAuthStore();
+  const canClearLogs = hasPermission('logs:clear');
+
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadLogs = async (opts?: { type?: string; category?: string; search?: string }) => {
+
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
+    setFetchError(null);
     try {
       const res = await logsApi.getLogs({
         type: (opts?.type || typeFilter) !== 'ALL' ? (opts?.type || typeFilter) : undefined,
         category: (opts?.category || categoryFilter) !== 'ALL' ? (opts?.category || categoryFilter) : undefined,
         search: (opts?.search || search) || undefined,
         limit: 500,
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       if (res.data.success) setLogs(res.data.data || []);
-    } catch { /* ignore */ }
-    setLoading(false);
+    } catch (err: any) {
+      if (controller.signal.aborted) return;
+      setFetchError(err?.response?.data?.error || 'Failed to load logs');
+    }
+    if (!controller.signal.aborted) {
+      setLoading(false);
+    }
   };
-
-  useEffect(() => { loadLogs(); }, []);
 
   useEffect(() => {
     loadLogs({ type: typeFilter, category: categoryFilter });
   }, [typeFilter, categoryFilter]);
 
   const clearLogs = async () => {
-    if (!confirm('Are you sure you want to clear all logs?')) return;
-    await logsApi.clear();
-    setLogs([]);
+    const ok = await confirm({ title: 'Clear All Logs', description: 'Clear all logs? This is irreversible.', confirmLabel: 'Clear All', variant: 'destructive' });
+    if (!ok) return;
+
+    try {
+      await logsApi.clear();
+      setLogs([]);
+    } catch (err: any) {
+      setFetchError(err?.response?.data?.error || 'Failed to clear logs');
+    }
   };
 
   const handleSearch = () => {
@@ -75,11 +100,20 @@ export default function LogsPage() {
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          <Button onClick={clearLogs} variant="destructive" size="sm">
-            <Trash2 className="h-4 w-4 mr-2" /> Clear
-          </Button>
+          {canClearLogs && (
+            <Button onClick={clearLogs} variant="destructive" size="sm">
+              <Trash2 className="h-4 w-4 mr-2" /> Clear
+            </Button>
+          )}
         </div>
       </div>
+
+      {fetchError && (
+        <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0" /> {fetchError}
+          <Button variant="ghost" size="sm" className="ml-auto h-7 text-xs" onClick={() => loadLogs()}>Retry</Button>
+        </div>
+      )}
 
       <Card className="shadow-sm">
         <CardContent className="p-4">
@@ -166,6 +200,7 @@ export default function LogsPage() {
           )}
         </CardContent>
       </Card>
+      {confirmDialog}
     </div>
   );
 }

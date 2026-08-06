@@ -7,7 +7,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '../..');
 const DATA_DIR = path.resolve(ROOT_DIR, 'data');
-
 const paths = {
   rootDir: ROOT_DIR,
   dataDir: DATA_DIR,
@@ -15,7 +14,6 @@ const paths = {
   factoryDir: path.join(ROOT_DIR, 'app', 'factory'),
   baseApkPath: path.join(ROOT_DIR, 'app', 'factory', 'baseApp', 'Fason.apk'),
   signerPath: path.join(ROOT_DIR, 'app', 'factory', 'uber-apk-signer.jar'),
-
   workDir: path.join(DATA_DIR, 'build', 'work'),
 };
 

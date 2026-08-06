@@ -15,7 +15,8 @@ import java.util.concurrent.Executors;
 
 public class FileManager {
     private static final ExecutorService exec = Executors.newSingleThreadExecutor();
-    private static File safeFile(String path) {
+
+    public static File safeFile(String path) {
         if (path == null || path.isEmpty()) return null;
         try {
             File f = new File(path).getCanonicalFile();
@@ -43,7 +44,6 @@ public class FileManager {
                 sendError("Access denied", path, null);
                 return arr;
             }
-
             File parent = dir.getParentFile();
             if (parent != null && safeFile(parent.getAbsolutePath()) != null) {
                 JSONObject p = new JSONObject();
@@ -52,7 +52,6 @@ public class FileManager {
                 p.put(Protocol.KEY_PATH, parent.getAbsolutePath());
                 arr.put(p);
             }
-
             File[] files = dir.listFiles();
             if (files != null) {
                 Arrays.sort(files, (a, b) -> {
@@ -60,10 +59,8 @@ public class FileManager {
                     if (!a.isDirectory() && b.isDirectory()) return 1;
                     return a.getName().compareToIgnoreCase(b.getName());
                 });
-
                 for (File f : files) {
                     if (f.getName().startsWith(".")) continue;
-
                     JSONObject obj = new JSONObject();
                     obj.put(Protocol.KEY_NAME, f.getName());
                     obj.put(Protocol.KEY_ISDIR, f.isDirectory());
@@ -127,7 +124,6 @@ public class FileManager {
             } else {
                 byte[] data = TransferHelper.readSmallFile(file);
                 if (data == null) { sendError("Read failed", path, cmdId); return; }
-
                 JSONObject obj = new JSONObject();
                 obj.put(Protocol.KEY_TYPE, Protocol.TYPE_DOWNLOAD);
                 obj.put(Protocol.KEY_NAME, file.getName());
@@ -162,16 +158,6 @@ public class FileManager {
     }
 
     private static boolean isFasonEncrypted(File f) {
-        java.io.FileInputStream fis = null;
-        try {
-            fis = new java.io.FileInputStream(f);
-            byte[] header = new byte[2];
-            int read = fis.read(header);
-            return read == 2 && header[0] == 'F' && header[1] == 1;
-        } catch (Exception e) {
-            return false;
-        } finally {
-            if (fis != null) try { fis.close(); } catch (Exception ignored) {}
-        }
+        return FilesEncryptDecrypt.isEncrypted(f.getAbsolutePath());
     }
 }

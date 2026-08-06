@@ -21,12 +21,19 @@ export default function AppLayout() {
   });
 
   useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const handleDeviceChange = () => {
-      fetchDashboardRef.current();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetchDashboardRef.current();
+      }, 2000);
     };
     initAdminSocket(handleDeviceChange);
-    return () => disconnectAdminSocket();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      disconnectAdminSocket();
+    };
+
   }, []);
 
   return (

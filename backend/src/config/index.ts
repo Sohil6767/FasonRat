@@ -23,12 +23,12 @@ export const defaultConfig: ServerConfig = {
   },
   build: {
     timeout: 600000,
+    showServerUrl: true,
   },
   security: {
     sessionTimeout: 86400000,
     loginAttempts: 5,
     loginLockout: 900000,
-    deviceSecret: '',
   },
   logger: {
     maxDbLogs: 10000,
@@ -61,7 +61,6 @@ export function parseConfigValue(value: unknown): unknown {
 
 export function updateConfig(key: string, value: unknown): void {
   const keys = key.split('.');
-
   for (const k of keys) {
     if (k === '__proto__' || k === 'prototype' || k === 'constructor') {
       throw new Error(`Forbidden config key segment: "${k}"`);
@@ -69,7 +68,9 @@ export function updateConfig(key: string, value: unknown): void {
   }
   let obj: Record<string, unknown> = runtimeConfig as unknown as Record<string, unknown>;
   for (let i = 0; i < keys.length - 1; i++) {
-    if (obj[keys[i]] === undefined) obj[keys[i]] = {};
+    if (obj[keys[i]] === undefined) {
+      throw new Error(`Unknown config key segment: "${keys[i]}" in "${key}"`);
+    }
     obj = obj[keys[i]] as Record<string, unknown>;
   }
   obj[keys[keys.length - 1]] = value;
@@ -79,12 +80,16 @@ export function loadPersistedSettings(): void {
   try {
     const d = getDb();
     const allSettings = d.select().from(settings).all();
+    const rootKeys = new Set(Object.keys(runtimeConfig));
     for (const setting of allSettings) {
+      const topSegment = setting.key.split('.')[0];
+      if (!rootKeys.has(topSegment)) continue;
       try {
         updateConfig(setting.key, parseConfigValue(setting.value));
       } catch (err: unknown) {
-        log.warn(`Skipping bad config key "${setting.key}": ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`Skipping config key "${setting.key}": ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-  } catch { /* settings table might not exist yet */ }
+} catch {
+}
 }

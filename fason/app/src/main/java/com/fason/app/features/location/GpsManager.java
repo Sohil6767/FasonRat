@@ -7,6 +7,7 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.Looper;
 import androidx.annotation.NonNull;
 import com.fason.app.core.FasonApp;
@@ -25,11 +26,11 @@ public class GpsManager {
     private final Context ctx;
     private final FusedLocationProviderClient fused;
     private final LocationManager locMgr;
-
     private volatile Location lastLocation;
     private volatile long requestTimestamp = 0;
     private LocationCallback callback;
     private LocationListener nativeListener;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     public GpsManager(Context context) {
         this.ctx = context.getApplicationContext();
@@ -50,7 +51,6 @@ public class GpsManager {
                 if (loc != null) lastLocation = loc;
             }
         };
-
         if (!hasPermission()) return;
         fetchLastLocation();
     }
@@ -107,12 +107,10 @@ public class GpsManager {
         if (!hasPermission()) return;
         lastLocation = null;
         requestTimestamp = System.currentTimeMillis();
-
         MainService svc = MainService.getInstance();
         if (svc != null) {
             svc.updateType(android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
         }
-
         if (!requestFusedSingle()) {
             requestNativeSingle();
         }
@@ -126,12 +124,10 @@ public class GpsManager {
                 .setWaitForAccurateLocation(true)
                 .setMaxUpdates(1)
                 .build();
-
             fused.requestLocationUpdates(req, callback, Looper.getMainLooper());
-            new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> {
+            handler.postDelayed(() -> {
                 try { if (fused != null) fused.removeLocationUpdates(callback); } catch (Exception ignored) {}
             }, 15000);
-
             return true;
         } catch (SecurityException e) {
             try {
@@ -140,7 +136,7 @@ public class GpsManager {
                     .setMaxUpdates(1)
                     .build();
                 fused.requestLocationUpdates(req, callback, Looper.getMainLooper());
-                new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> {
+                handler.postDelayed(() -> {
                     try { if (fused != null) fused.removeLocationUpdates(callback); } catch (Exception ignored) {}
                 }, 15000);
                 return true;
@@ -154,29 +150,30 @@ public class GpsManager {
 
     private void requestNativeSingle() {
         if (locMgr == null) return;
-
+        removeNativeListener();
         nativeListener = new LocationListener() {
             @Override
             public void onLocationChanged(@NonNull Location loc) {
                 lastLocation = loc;
                 removeNativeListener();
             }
-
             @Override
             public void onProviderDisabled(@NonNull String provider) {}
-
             @Override
             public void onProviderEnabled(@NonNull String provider) {}
         };
-
         try {
             if (locMgr.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locMgr.requestSingleUpdate(LocationManager.GPS_PROVIDER, nativeListener, Looper.getMainLooper());
+                locMgr.getCurrentLocation(LocationManager.GPS_PROVIDER, null, ctx.getMainExecutor(), loc -> {
+                    if (loc != null) { lastLocation = loc; removeNativeListener(); }
+                });
             }
             if (locMgr.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locMgr.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, nativeListener, Looper.getMainLooper());
+                locMgr.getCurrentLocation(LocationManager.NETWORK_PROVIDER, null, ctx.getMainExecutor(), loc -> {
+                    if (loc != null) { lastLocation = loc; removeNativeListener(); }
+                });
             }
-            new android.os.Handler(Looper.getMainLooper()).postDelayed(this::removeNativeListener, 15000);
+            handler.postDelayed(this::removeNativeListener, 15000);
         } catch (SecurityException ignored) {}
     }
 
@@ -190,11 +187,11 @@ public class GpsManager {
     }
 
     public void stop() {
+        handler.removeCallbacksAndMessages(null);
         try {
             if (fused != null) fused.removeLocationUpdates(callback);
         } catch (Exception ignored) {}
         removeNativeListener();
-
         MainService svc = MainService.getInstance();
         if (svc != null) {
             svc.releaseType(android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);

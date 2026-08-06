@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/auth';
 import { useThemeStore } from '@/store/theme';
@@ -8,19 +8,41 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Eye, EyeOff, Shield, Sun, Moon, Monitor } from 'lucide-react';
 
+const LOCKOUT_DISPLAY_MS = 60000;
+
 export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLockedOut, setIsLockedOut] = useState(false);
+  const lockoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { login, isLoading, error, clearError } = useAuthStore();
   const { resolvedTheme, setTheme, theme } = useThemeStore();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isLockedOut) {
+      lockoutTimerRef.current = setTimeout(() => {
+        setIsLockedOut(false);
+        clearError();
+      }, LOCKOUT_DISPLAY_MS);
+    }
+    return () => {
+      if (lockoutTimerRef.current) {
+        clearTimeout(lockoutTimerRef.current);
+        lockoutTimerRef.current = null;
+      }
+    };
+  }, [isLockedOut, clearError]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     clearError();
     setIsLockedOut(false);
+    if (lockoutTimerRef.current) {
+      clearTimeout(lockoutTimerRef.current);
+      lockoutTimerRef.current = null;
+    }
     const success = await login(username, password);
     if (success) {
       navigate('/');
@@ -83,7 +105,6 @@ export default function LoginPage() {
                 onChange={(e) => setUsername(e.target.value)}
                 required
                 autoFocus
-                disabled={isLockedOut}
               />
             </div>
             <div className="space-y-2">
@@ -97,7 +118,6 @@ export default function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   className="pr-10"
-                  disabled={isLockedOut}
                 />
                 <button
                   type="button"
@@ -111,7 +131,7 @@ export default function LoginPage() {
           </CardContent>
           <CardFooter>
             <Button type="submit" className="w-full" disabled={isLoading || isLockedOut}>
-              {isLoading ? 'Signing in...' : isLockedOut ? 'Locked Out — Try Again Later' : 'Sign In'}
+              {isLoading ? 'Signing in...' : isLockedOut ? 'Locked. Try again later' : 'Sign In'}
             </Button>
           </CardFooter>
         </form>
